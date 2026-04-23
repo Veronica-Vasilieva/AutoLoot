@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: AutoLoot
+## Notes: Player-created addon for Project Ebonhold — auto-loots with Greedy Scavenger, auto-sells with Goblin Merchant. /eal to open.
+## Author: Nu/Veronica
+## Version: 3.1
+## Dependencies: ProjectEbonhold
+## SavedVariables: EAL_SavedDB
+
+AutoLoot.lua
