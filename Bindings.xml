@@ -1,0 +1,11 @@
+<Bindings xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/ ..\..\FrameXML\UI.xsd">
+    <Binding name="AUTOLOOT_TOGGLE_WINDOW" header="AUTOLOOT" category="AutoLoot" description="Toggle the AutoLoot settings window">
+        if SlashCmdList and SlashCmdList["EBAUTOLOOT"] then SlashCmdList["EBAUTOLOOT"]("") end
+    </Binding>
+    <Binding name="AUTOLOOT_TOGGLE_ENABLED" category="AutoLoot" description="Enable or disable the loot+sell cycle">
+        if SlashCmdList and SlashCmdList["EBAUTOLOOT"] then SlashCmdList["EBAUTOLOOT"]("toggle") end
+    </Binding>
+    <Binding name="AUTOLOOT_FORCE_SELL" category="AutoLoot" description="Force a sell cycle right now">
+        if SlashCmdList and SlashCmdList["EBAUTOLOOT"] then SlashCmdList["EBAUTOLOOT"]("sell") end
+    </Binding>
+</Bindings>

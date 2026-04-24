@@ -1,4 +1,44 @@
-# Changelog — EbonholdAutoLoot
+# Changelog — AutoLoot
+
+## [4.0] - 2026-04-23
+
+Major "wider world" release — portability, discoverability, and safety overhaul.
+
+### Fixed
+- **Forward-reference bug in `EAL_WhitelistTomes`** — previously the "Whitelist all Tome of Echo:" button would throw "attempt to call a nil value" when it tried to refresh the whitelist, because `EAL_RefreshBlacklist` was declared `local` *after* `EAL_WhitelistTomes` was defined, so the name resolved to the global namespace (nil) at runtime. Added a proper forward declaration and hoisted both `EAL_RefreshBlacklist` and `EAL_UpdateStatus` to the forward-decl block.
+- **Accidental auto-sell at non-sell vendors** — previously `OnMerchantShow` would trigger the sell cycle whenever `EAL_DB.enabled` was true, meaning walking past a repair vendor or quest-NPC merchant would silently sell your bags. Now only auto-sells when the addon actively triggered the sell cycle (`triggeredSellCycle` flag), unless the user opts into the new `Sell at any vendor` toggle.
+- **Silent auto-deletion of rare items** — the "auto-delete unsellable rares" behavior was previously unconditional and hidden, running every 3 seconds and destroying any rare without a vendor price (including quest items, unique tokens, and certain soulbound gear). Now OFF by default, gated behind a dedicated GUI toggle with a confirmation popup that explains the danger.
+
+### Added
+- **Minimap button** — hand-rolled, draggable, no LibDBIcon dependency. Left-click opens settings; right-click toggles enable/disable. Status dot turns green when active. Position is saved as an angle around the minimap.
+- **Blizzard Interface Options panel** — registers under `Esc → Interface → AddOns → AutoLoot` with a summary, an "Open AutoLoot settings" button, and a slash-command reference.
+- **Keybindings** via `Bindings.xml` — three bindable actions: Toggle window, Toggle enable/disable, Force Sell Now. Set them in `Esc → Key Bindings → AutoLoot`.
+- **Configurable companion names** — loot and vendor companion names are now editable fields in the GUI (defaults `Greedy Scavenger` and `Goblin Merchant`). Makes AutoLoot work on any private server or locale that uses different companion names.
+- **Per-character whitelist** — `SavedVariablesPerCharacter` now holds a second whitelist scope. Entries show with `[A]` (account) or `[C]` (character) prefixes in the list. `+Acct` / `+Char` buttons add to either scope. Effective whitelist at sell time is the union. Existing account-wide entries are preserved.
+- **Gold-earned counter** — per-sell session delta is calculated from `GetMoney()` and printed (`Earned this session: 12g 35s`). Running lifetime total is displayed in the status row and persists in SavedVariables.
+- **Sound feedback** — `AuctionWindowClose` plays on sell completion; `TellMessage` on the 8s "vendor ready" reminder. Toggle in GUI.
+- **Confirmation popups** — "Delete All Savage PvP Gear" and "Clear Whitelist" now require `StaticPopup` confirmation. `/eal reset` also now prompts for confirmation.
+- **`/eal toggle` and `/eal sell` slash commands** — wired up to the new keybinding handlers; `/eal minimap` toggles the minimap button.
+- **Schema version + migration hook** — `schemaVersion` field in both SavedVariables tables; `RunMigrations` runs on load if the stored version is older than `CURRENT_SCHEMA`. Enables future SavedVariables changes without breaking existing users.
+- **`X-Category: Inventory` and `X-Website`** in the `.toc` for addon-manager integration.
+- **Tooltips on every destructive button** (Savage delete, Clear whitelist, Enable/Disable, Force Sell, whitelist scope buttons, sound, auto-delete rares).
+
+### Changed
+- **`ProjectEbonhold` moved from `Dependencies` to `OptionalDeps`** — AutoLoot now loads on any 3.3.5a server. Ebonhold-specific features (Tome of Echo whitelisting, Savage PvP deletion) remain available but non-Ebonhold servers can use everything else.
+- **Polling replaced by `BAG_UPDATE` event** — bag-fullness detection is now event-driven instead of a 3-second `OnUpdate` poll. Sell cycle triggers instantly when the last slot fills; idle CPU drops to near-zero. Companion stuck-check still runs on the `bagCheckTimer` interval (where bag polling used to live).
+- **Author field in `.toc`** updated to `Veronica-Vasilieva`.
+- **`Notes` line** updated for wider audience; `"Project Ebonhold"` qualifier dropped.
+- **Version bumped to `4.0`** — counts as a major due to `.toc` dependency change, SavedVariables schema addition, and UI reshape.
+
+### Removed
+- The silent "auto-delete rares every tick" behavior. Replaced by the opt-in toggle described above. Existing saves start with `autoDeleteRares = false`.
+
+### Visual
+- **WotLK-era dark/gold reskin** — warmer, darker parchment tint (`SetBackdropColor(0.10, 0.08, 0.06)`), gold-tinged border (`0.85, 0.68, 0.28`), subtle vertical gradient overlay (gold-ember top fading to near-black bottom), gold L-bracket corner accents, and a gold rule with additive-blended glow under the title bar. All textures use the 3.3.5a-safe `WHITE8X8 + SetVertexColor` pattern.
+- **Window height bumped to 740** so the full whitelist + hint row fit without clipping (was 550 in v3.x, 630 pre-layout, now 740).
+- **Companion name input boxes shifted right** (x=56 → x=72) so the "Vendor:" label no longer overlaps the input's left cap.
+
+---
 
 ## [3.1] - 2026-04-16
 
