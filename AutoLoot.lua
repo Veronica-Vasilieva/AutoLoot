@@ -1025,8 +1025,8 @@ local function EAL_BuildGUI()
     bgGrad:SetPoint("TOPLEFT",     13, -13)
     bgGrad:SetPoint("BOTTOMRIGHT", -13, 13)
     bgGrad:SetGradientAlpha("VERTICAL",
-        0.05, 0.04, 0.03, 0.60,   -- bottom (slightly darker)
-        0.22, 0.14, 0.06, 0.45)   -- top (warm gold-ember tint)
+        0.05, 0.04, 0.03, 0.18,   -- bottom (subtle darken)
+        0.22, 0.14, 0.06, 0.10)   -- top (subtle warm glow)
 
     -- Gold L-bracket accents at each corner
     local function GoldCorner(point, ox, oy)
@@ -1182,6 +1182,28 @@ local function EAL_BuildGUI()
     -- Companion names row
     MakeDivider(win, -162)
     MakeHeader(win, "COMPANION NAMES", 18, -172)
+
+    -- Explicit dark panel behind the two input rows so the inputs' native
+    -- dark bounding box stays readable regardless of the parchment gradient.
+    local companionPanel = win:CreateTexture(nil, "ARTWORK")
+    companionPanel:SetTexture("Interface\\Buttons\\WHITE8X8")
+    companionPanel:SetVertexColor(0, 0, 0, 0.55)
+    companionPanel:SetPoint("TOPLEFT",     win, "TOPLEFT",  14, -186)
+    companionPanel:SetPoint("BOTTOMRIGHT", win, "TOPLEFT", 326, -236)
+
+    -- Thin gold hairline border around the panel (WotLK inset look)
+    local function PanelEdge(tlx, tly, brx, bry)
+        local e = win:CreateTexture(nil, "ARTWORK", nil, 1)
+        e:SetTexture("Interface\\Buttons\\WHITE8X8")
+        e:SetVertexColor(0.55, 0.42, 0.18, 0.85)
+        e:SetPoint("TOPLEFT",     win, "TOPLEFT", tlx, tly)
+        e:SetPoint("BOTTOMRIGHT", win, "TOPLEFT", brx, bry)
+        return e
+    end
+    PanelEdge( 14, -186, 326, -187)  -- top
+    PanelEdge( 14, -235, 326, -236)  -- bottom
+    PanelEdge( 14, -186,  15, -236)  -- left
+    PanelEdge(325, -186, 326, -236)  -- right
 
     local lootLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     lootLabel:SetPoint("TOPLEFT", 18, -190)

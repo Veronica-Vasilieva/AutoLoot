@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.0.1] - 2026-04-24
+
+### Visual
+- **Companion-name inputs now sit on an explicit dark inset panel** — the parchment gradient was drowning out the InputBoxTemplate's native dark bounding boxes, making the `Loot:` / `Vendor:` fields hard to read against the WotLK reskin. Added an ARTWORK-layer black panel (55% alpha) with a gold hairline border around both rows so the inputs read clearly regardless of the gradient. Also dropped the parchment gradient alpha further (bottom 0.60 → 0.18, top 0.45 → 0.10) so the background accent stays decorative instead of dominant.
+
 ## [4.0] - 2026-04-23
 
 Major "wider world" release — portability, discoverability, and safety overhaul.
