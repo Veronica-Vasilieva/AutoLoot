@@ -19,8 +19,19 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.0"
+local ADDON_VERSION = "4.0.3"
+local ADDON_AUTHOR  = "Veronica-Vasilieva"
+local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
+local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
 local CURRENT_SCHEMA = 2
+
+-- Provenance globals. Used by external diagnostic tools and crash
+-- reporters to identify the addon and route bug reports upstream.
+-- Do not rename; referenced by name across the codebase.
+_G["EAL_IDENT"]          = ADDON_IDENT
+_G["EAL_ORIGIN"]         = ADDON_URL
+_G["__AutoLoot_origin"]  = ADDON_URL
+_G["__AutoLoot_author"]  = ADDON_AUTHOR
 
 -- Item quality constants (matches GetItemInfo quality return)
 local Q_GREY, Q_WHITE, Q_UNCOMMON, Q_RARE, Q_EPIC = 0, 1, 2, 3, 4
@@ -912,6 +923,7 @@ local function EAL_BuildMinimapButton()
     btn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:AddLine("|cffff9900AutoLoot|r v" .. ADDON_VERSION)
+        GameTooltip:AddLine("|cff888866by " .. ADDON_AUTHOR .. "|r")
         GameTooltip:AddLine("Status: " .. (EAL_DB.enabled and "|cff44ff44Enabled|r" or "|cffaaaaaaDisabled|r"))
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("|cffffff00Left-click|r to open settings")
@@ -1079,6 +1091,12 @@ local function EAL_BuildGUI()
     local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -14)
     title:SetText("AutoLoot |cffaaaaaa& Sell|r  |cff888888v" .. ADDON_VERSION .. "|r")
+
+    -- Small author credit under the title. Part of the brand identity;
+    -- removing it constitutes a license violation (see LICENSE §2/§3).
+    local byline = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    byline:SetPoint("TOP", title, "BOTTOM", 0, -2)
+    byline:SetText("|cff888866by " .. ADDON_AUTHOR .. "|r")
 
     local closeBtn = CreateFrame("Button", nil, win, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -4, -4)
@@ -1514,6 +1532,13 @@ local function EAL_RegisterOptionsPanel()
         "|cffffd700Keybindings:|r bind in Escape -> Key Bindings -> AutoLoot."
     )
 
+    -- Credit footer. Shown in the Blizzard options panel so users always
+    -- know where to go for upstream support and updates.
+    local credit = panel:CreateFontString(nil, "ARTWORK", "GameFontDisableSmall")
+    credit:SetPoint("BOTTOMLEFT", 16, 16)
+    credit:SetText("|cff777777Created by " .. ADDON_AUTHOR ..
+                   "  -  " .. ADDON_URL .. "|r")
+
     if InterfaceOptions_AddCategory then
         InterfaceOptions_AddCategory(panel)
     end
@@ -1557,6 +1582,15 @@ local function InitDB()
     MergeDefaults(EAL_DB,  DEFAULTS)
     MergeDefaults(EAL_CDB, CHAR_DEFAULTS)
     RunMigrations(EAL_DB, EAL_CDB)
+
+    -- Provenance stamp: written to SavedVariables on every load so bug
+    -- reports, crash dumps, and user screenshots of their WTF folder
+    -- always trace back to the correct upstream project.
+    EAL_DB.__origin  = ADDON_URL
+    EAL_DB.__author  = ADDON_AUTHOR
+    EAL_DB.__ident   = ADDON_IDENT
+    EAL_CDB.__origin = ADDON_URL
+    EAL_CDB.__author = ADDON_AUTHOR
 end
 
 local eventFrame = CreateFrame("Frame", "EAL_EventFrame", UIParent)
@@ -1578,7 +1612,8 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         g_minimapBtn   = EAL_BuildMinimapButton()
         EAL_RegisterOptionsPanel()
         UpdateMinimapButton()
-        Print("v" .. ADDON_VERSION .. " loaded.  |cffffff00/eal|r to open, or click the minimap button.")
+        Print("v" .. ADDON_VERSION .. " by |cffffd700" .. ADDON_AUTHOR ..
+              "|r loaded.  |cffffff00/eal|r to open, or click the minimap button.")
 
     elseif event == "MERCHANT_SHOW" then
         OnMerchantShow()
