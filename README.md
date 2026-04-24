@@ -164,4 +164,16 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ## License
 
-Use, modify, and redistribute freely. If you ship a fork, keep the contributors list.
+AutoLoot is **source-available, not open-source in the OSI sense.** See [LICENSE](LICENSE) for the full terms. Short version:
+
+- **You may** use, install, modify for personal use, study the source, and contribute back.
+- **You may** publish a public fork — but only under a clearly different name that does not contain "AutoLoot", with a README that prominently credits the original project and links to this repo.
+- **You may not** rebrand, repackage, or upload this addon (modified or unmodified) under a different author's name to CurseForge, WoWInterface, private-server addon packs, or anywhere else.
+- **You may not** sell it, bundle it as a paid feature, or place it behind a paywall.
+- **Attribution is non-optional.** The LICENSE file, contributors list, CHANGELOG, and the original `## Author:` line in the `.toc` must be preserved in every copy and derivative.
+
+Private-server communities are explicitly welcome to bundle unmodified copies in their free addon packs, provided attribution is preserved.
+
+This license exists because prior projects by the author have been stolen and republished under other names. Attribution is required, not requested.
+
+For licensing questions or permission requests, [open an issue](https://github.com/Veronica-Vasilieva/AutoLoot/issues).

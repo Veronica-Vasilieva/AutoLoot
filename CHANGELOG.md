@@ -1,5 +1,12 @@
 # Changelog — AutoLoot
 
+## [4.0.2] - 2026-04-24
+
+### Legal
+- **Added `LICENSE` file — custom source-available license.** Prior projects by the author have been stolen and republished under other names, so AutoLoot now ships with a license that explicitly requires attribution, prohibits rebranding and repackaging as original work, mandates that public forks use a clearly different addon name and prominently credit upstream, and prohibits commercial redistribution. Private-server communities remain explicitly welcome to bundle unmodified copies in free addon packs. See `LICENSE` for full terms.
+- **Added `## X-License:` line to `.toc`** so addon managers surface the license in the addon list.
+- **README `License` section rewritten** to summarize the new terms and link to `LICENSE`.
+
 ## [4.0.1] - 2026-04-24
 
 ### Visual

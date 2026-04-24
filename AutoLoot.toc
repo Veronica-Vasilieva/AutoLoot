@@ -2,12 +2,13 @@
 ## Title: AutoLoot
 ## Notes: Automated loot + vendor cycle using summonable companions. /eal or minimap button to open.
 ## Author: Veronica-Vasilieva
-## Version: 4.0.1
+## Version: 4.0.2
 ## OptionalDeps: ProjectEbonhold
 ## SavedVariables: EAL_SavedDB
 ## SavedVariablesPerCharacter: EAL_CharDB
 ## X-Category: Inventory
 ## X-Website: https://github.com/Veronica-Vasilieva/AutoLoot
+## X-License: Source-available — attribution required, no rebranding, non-commercial. See LICENSE.
 
 Bindings.xml
 AutoLoot.lua

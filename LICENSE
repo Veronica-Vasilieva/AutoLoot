@@ -1,0 +1,143 @@
+AutoLoot — Source-Available License (v1.0)
+Copyright (c) 2026 Veronica-Vasilieva and the AutoLoot contributors.
+
+This license governs the AutoLoot World of Warcraft addon and all
+accompanying source code, documentation, and assets in this repository
+(the "Software"). By downloading, using, copying, modifying, or
+redistributing any portion of the Software, you agree to these terms.
+
+This is NOT an OSI-approved open-source license. It is a source-available
+license that grants broad use-and-modify rights but restricts redistribution
+in ways designed to prevent the work from being stolen, rebranded, or sold.
+
+-------------------------------------------------------------------------------
+1. GRANT OF USE
+-------------------------------------------------------------------------------
+You are granted a perpetual, worldwide, royalty-free, non-exclusive license to:
+
+  a. Download, install, and use the Software on any number of personal
+     World of Warcraft client installations.
+  b. Modify the Software for your own personal use.
+  c. Read, study, and learn from the source code.
+  d. Contribute improvements back to the upstream project via pull request
+     or similar mechanism.
+
+-------------------------------------------------------------------------------
+2. ATTRIBUTION (REQUIRED)
+-------------------------------------------------------------------------------
+Any copy, modified copy, or derivative of the Software must retain, without
+alteration:
+
+  a. This LICENSE file, in full, at the root of the distribution.
+  b. The copyright notice above.
+  c. The "Contributors" section of README.md and the full CHANGELOG.md.
+  d. The `## Author:` field of `AutoLoot.toc` must continue to list
+     "Veronica-Vasilieva" as original author. A fork MAY add its own
+     maintainer to an additional `## X-Maintainer:` field but MAY NOT
+     remove or replace the original author line.
+
+-------------------------------------------------------------------------------
+3. NO REBRANDING, NO REPACKAGING AS ORIGINAL WORK (REQUIRED)
+-------------------------------------------------------------------------------
+You may NOT:
+
+  a. Redistribute the Software — or any substantially similar derivative —
+     under a different addon name while presenting it as original work.
+  b. Remove, obscure, or alter in-game identifiers (slash commands,
+     minimap button tooltip, settings window title, options-panel entry)
+     that identify this project as AutoLoot by Veronica-Vasilieva, except
+     as required by section 4 below when publishing a clearly-named fork.
+  c. Upload this addon, modified or unmodified, to any addon distribution
+     site (CurseForge, WoWInterface, Wago, Tukui, private-server addon
+     packs, etc.) under an author account other than the original author's,
+     without prior written permission.
+  d. Claim authorship, co-authorship, or primary credit for the Software
+     or any substantial portion of it.
+
+"Substantially similar" means that a reasonable observer, comparing the two
+addons side-by-side, would recognize the derivative as being primarily this
+Software with cosmetic, naming, or trivial functional changes.
+
+-------------------------------------------------------------------------------
+4. FORKS (PERMITTED, WITH CONDITIONS)
+-------------------------------------------------------------------------------
+You MAY publish a public fork of the Software only if ALL of the following
+are true:
+
+  a. The fork uses a clearly different addon name AND a clearly different
+     addon folder name. ("AutoLoot2", "AutoLoot-Enhanced", or any variant
+     containing the string "AutoLoot" does NOT satisfy this requirement.)
+  b. The fork's root README prominently (within the first screen of
+     rendered content) states that it is derived from AutoLoot by
+     Veronica-Vasilieva, and links to
+     https://github.com/Veronica-Vasilieva/AutoLoot
+  c. The fork preserves this LICENSE file and all attribution required
+     by section 2.
+  d. The fork does not present itself, in any store listing, README,
+     in-game UI, or promotional material, as an original creation of
+     its publisher.
+  e. The fork is itself released under this license, or a license no
+     less restrictive than this one, for the same set of protected
+     behaviors (attribution, no rebranding, non-commercial).
+
+-------------------------------------------------------------------------------
+5. NON-COMMERCIAL
+-------------------------------------------------------------------------------
+You may NOT:
+
+  a. Sell the Software, or charge money for access to it.
+  b. Bundle the Software as a paid feature of any commercial product,
+     subscription, service, or launcher.
+  c. Place the Software behind a paywall, subscription, or donation gate.
+  d. Use the Software in any revenue-generating offering without prior
+     written permission of the copyright holder.
+
+Explicitly permitted:
+
+  - Private-server communities MAY bundle unmodified copies of the
+    Software in their free addon packs, launchers, or client builds,
+    provided this LICENSE and all attribution are preserved and the
+    Software is not itself a paid component.
+  - Streamers, video creators, and content reviewers MAY display, demo,
+    and describe the Software on monetized channels.
+  - Donations or voluntary tips to the copyright holder are welcome
+    and are not restricted by this section.
+
+-------------------------------------------------------------------------------
+6. NO WARRANTY
+-------------------------------------------------------------------------------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING
+FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+7. TERMINATION
+-------------------------------------------------------------------------------
+Any violation of sections 2, 3, 4, or 5 immediately and automatically
+terminates your rights under this license. All copies of the Software in
+your possession must then be deleted or destroyed.
+
+Reinstatement of rights requires explicit, written permission from the
+copyright holder.
+
+-------------------------------------------------------------------------------
+8. SEVERABILITY
+-------------------------------------------------------------------------------
+If any provision of this license is held to be unenforceable, the remaining
+provisions remain in full effect.
+
+-------------------------------------------------------------------------------
+9. CONTACT
+-------------------------------------------------------------------------------
+For licensing questions, commercial-use inquiries, or permission requests,
+open an issue at https://github.com/Veronica-Vasilieva/AutoLoot/issues
+or contact the copyright holder via the GitHub profile at
+https://github.com/Veronica-Vasilieva
+
+-------------------------------------------------------------------------------
+END OF LICENSE
+-------------------------------------------------------------------------------
