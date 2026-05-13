@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.0.3"
+local ADDON_VERSION = "4.1.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -79,6 +79,12 @@ local DEFAULTS = {
     -- Sell batching
     fastMode         = false,
     checkInterval    = 3,
+
+    -- Quick-sell-by-item-level threshold. The "Sell gear at item level N
+    -- or below" button targets gear at or below this iLvl. Default 199
+    -- because on many private servers iLvl 200+ has crafting / upgrade
+    -- uses, while ≤199 is safe junk.
+    ilvlSellThreshold = 199,
 
     -- Whitelist scope (union of account + per-character is used at runtime)
     blacklist        = {},        -- account-wide whitelist (name misnomer kept for back-compat)
@@ -448,6 +454,127 @@ EAL_RefreshBlacklist = function()
 end
 
 -------------------------------------------------------------------------------
+-- Quick-sell by item level
+--
+-- Scans bags for equippable gear at or below a configurable iLvl threshold
+-- (default 199) and sells it in throttled batches when the merchant window
+-- is open. Filters:
+--   - equipLoc must be non-empty   -> only true gear, never trade goods
+--   - sellPrice > 0                -> never sells quest items or no-vendor tokens
+--   - not whitelisted              -> respects account + per-char whitelist
+--   - iLevel > 0 and <= threshold  -> below the user-configured cutoff
+-- This is a one-shot user action, not part of the auto sell cycle, so we
+-- bypass the quality-toggle logic entirely.
+-------------------------------------------------------------------------------
+local function EAL_ScanLowILvlGear(threshold)
+    local matches, totalValue = {}, 0
+    for bag = 0, 4 do
+        local numSlots = GetContainerNumSlots(bag) or 0
+        for slot = 1, numSlots do
+            local link = GetContainerItemLink(bag, slot)
+            if link then
+                local name, _, _, iLevel, _, _, _, _, equipLoc, _, sellPrice = GetItemInfo(link)
+                if name and iLevel and iLevel > 0 and iLevel <= threshold
+                   and equipLoc and equipLoc ~= ""
+                   and sellPrice and sellPrice > 0
+                   and not IsBlacklisted(name) then
+                    local _, count = GetContainerItemInfo(bag, slot)
+                    count = count or 1
+                    table.insert(matches, {
+                        bag = bag, slot = slot, name = name,
+                        iLevel = iLevel, sellPrice = sellPrice, count = count,
+                    })
+                    totalValue = totalValue + (sellPrice * count)
+                end
+            end
+        end
+    end
+    return matches, totalValue
+end
+
+local function EAL_SellLowILvlGearNow(threshold)
+    threshold = threshold or EAL_DB.ilvlSellThreshold or 199
+
+    if not MerchantFrame:IsShown() then
+        Print("|cffff4444No vendor open.|r Open a vendor first " ..
+              "(or use |cffffff00Force Sell Now|r to summon one), then click again.")
+        return
+    end
+
+    local matches = EAL_ScanLowILvlGear(threshold)
+    if #matches == 0 then
+        Print("No gear at iLvl |cffffff00" .. threshold .. "|r or below to sell.")
+        return
+    end
+
+    local PULSE_CAP   = EAL_DB.fastMode and (MAX_SELL_PER_PULSE * FAST_MODE_BATCH_MULTIPLIER) or MAX_SELL_PER_PULSE
+    local BATCH_DELAY = EAL_DB.fastMode and (SELL_BATCH_DELAY / FAST_MODE_DELAY_DIVISOR) or SELL_BATCH_DELAY
+    local startMoney  = GetMoney()
+
+    local function SellNext(idx, sold)
+        sold = sold or 0
+        local thisPulse = 0
+        while idx <= #matches and thisPulse < PULSE_CAP do
+            local m = matches[idx]
+            -- Re-validate the slot in case bag contents shifted between scan
+            -- and sell (consolidation, looting, etc).
+            local link = GetContainerItemLink(m.bag, m.slot)
+            if link then
+                local n = GetItemInfo(link)
+                if n == m.name then
+                    UseContainerItem(m.bag, m.slot)
+                    sold = sold + 1
+                    thisPulse = thisPulse + 1
+                end
+            end
+            idx = idx + 1
+        end
+
+        if idx <= #matches and MerchantFrame:IsShown() then
+            After(BATCH_DELAY, function()
+                if MerchantFrame:IsShown() then
+                    SellNext(idx, sold)
+                else
+                    Print("Vendor closed mid-sell. Sold |cffffff00" .. sold .. "|r item(s).", 1, 0.6, 0.3)
+                end
+            end)
+        else
+            local delta = GetMoney() - startMoney
+            if delta < 0 then delta = 0 end
+            EAL_DB.goldEarned = (EAL_DB.goldEarned or 0) + delta
+            EAL_DB.itemsSold  = (EAL_DB.itemsSold  or 0) + sold
+            Print("Quick-sell complete. Sold |cffffff00" .. sold ..
+                  "|r gear item(s) at iLvl <= " .. threshold ..
+                  ".  |cffaaaaaa(earned: " .. FormatMoney(delta) .. ")|r")
+            if EAL_DB.soundEnabled and EAL_DB.playSoundOnSell then
+                PlaySound("AuctionWindowClose")
+            end
+            EAL_UpdateStatus()
+        end
+    end
+
+    SellNext(1, 0)
+end
+
+-- Module-level handle so popup OnAccept can find the configured threshold.
+local function EAL_PromptSellLowILvl()
+    local threshold = EAL_DB.ilvlSellThreshold or 199
+    local matches, totalValue = EAL_ScanLowILvlGear(threshold)
+    if #matches == 0 then
+        Print("No gear at iLvl |cffffff00" .. threshold .. "|r or below in bags.")
+        return
+    end
+    local popup = StaticPopupDialogs["AUTOLOOT_CONFIRM_SELL_LOW_ILVL"]
+    popup.text = string.format(
+        "Sell |cffffff00%d|r gear item(s) at iLvl <= |cffffff00%d|r?\n" ..
+        "|cffaaaaaaEstimated value: %s|r\n\n" ..
+        "Whitelisted items are skipped. Trade goods, quest items,\n" ..
+        "and items with no vendor price are never affected.",
+        #matches, threshold, FormatMoney(totalValue))
+    StaticPopup_Show("AUTOLOOT_CONFIRM_SELL_LOW_ILVL")
+end
+
+-------------------------------------------------------------------------------
 -- Selling logic
 -------------------------------------------------------------------------------
 local function FinishSelling(totalSold, totalSkipped)
@@ -768,6 +895,19 @@ StaticPopupDialogs["AUTOLOOT_CONFIRM_RESET_WHITELIST"] = {
     preferredIndex = 3,
 }
 
+StaticPopupDialogs["AUTOLOOT_CONFIRM_SELL_LOW_ILVL"] = {
+    text         = "",   -- set dynamically by EAL_PromptSellLowILvl
+    button1      = "Sell",
+    button2      = "Cancel",
+    OnAccept     = function()
+        EAL_SellLowILvlGearNow(EAL_DB.ilvlSellThreshold or 199)
+    end,
+    timeout      = 0,
+    whileDead    = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
 StaticPopupDialogs["AUTOLOOT_CONFIRM_AUTODELETE_RARES"] = {
     text         = "Enable automatic deletion of Rare items with no vendor price?\n\n|cffff4444This silently deletes rare items every few seconds. Some rare quest items, tokens, and unique gear have no vendor price and will be destroyed.|r\n\nOnly enable if you understand what this does.",
     button1      = "Enable",
@@ -1008,7 +1148,7 @@ end
 
 local function EAL_BuildGUI()
     local win = CreateFrame("Frame", "EAL_Window", UIParent)
-    win:SetWidth(340); win:SetHeight(740)
+    win:SetWidth(340); win:SetHeight(770)
     win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", EAL_DB.windowX, EAL_DB.windowY)
     win:SetFrameStrata("HIGH")
     win:SetMovable(true)
@@ -1334,10 +1474,68 @@ local function EAL_BuildGUI()
             "|cffaaaaaawhen the vendor companion is ready.|r",
         })
 
-    -- Savage PvP deletion (confirmation required)
+    -- Quick-sell by item level row (server-specific helper:
+    -- on Ebonhold and similar servers, gear >= iLvl 200 has crafting /
+    -- upgrade uses while gear <=199 is safe junk).
     MakeDivider(win, -382)
+    local quickSellBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
+    quickSellBtn:SetPoint("TOPLEFT", 18, -392)
+    quickSellBtn:SetWidth(246); quickSellBtn:SetHeight(22)
+    local function UpdateQuickSellBtnText()
+        quickSellBtn:SetText("Sell gear at iLvl " ..
+            (EAL_DB.ilvlSellThreshold or 199) .. " or below")
+    end
+    UpdateQuickSellBtnText()
+    quickSellBtn:SetScript("OnClick", EAL_PromptSellLowILvl)
+    MakeTooltipButton(quickSellBtn, "|cffffd700Quick-sell low-iLvl gear|r", {
+        "|cffaaaaaaScans bags for equippable gear at or below|r",
+        "|cffaaaaaathe configured item level and sells it at|r",
+        "|cffaaaaaathe currently-open vendor.|r",
+        " ",
+        "|cffaaaaaaFilters: equipment only (never trade goods),|r",
+        "|cffaaaaaamust have a vendor price (never quest items),|r",
+        "|cffaaaaaaskips whitelisted items.|r",
+        " ",
+        "|cffff9900Open a vendor before clicking. Confirmation|r",
+        "|cffff9900popup shows count + estimated value.|r",
+    })
+
+    local ilvlInput = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
+    ilvlInput:SetPoint("TOPLEFT", 280, -390)
+    ilvlInput:SetWidth(42); ilvlInput:SetHeight(20)
+    ilvlInput:SetAutoFocus(false)
+    ilvlInput:SetMaxLetters(4)
+    ilvlInput:SetNumeric(true)
+    ilvlInput:SetJustifyH("CENTER")
+    ilvlInput:SetText(tostring(EAL_DB.ilvlSellThreshold or 199))
+    ilvlInput:SetScript("OnEnterPressed", function(self)
+        local n = tonumber(self:GetText()) or 199
+        if n < 1   then n = 1   end
+        if n > 999 then n = 999 end
+        EAL_DB.ilvlSellThreshold = n
+        self:SetText(tostring(n))
+        self:ClearFocus()
+        UpdateQuickSellBtnText()
+        Print("Quick-sell threshold set to iLvl <= |cffffff00" .. n .. "|r.")
+    end)
+    ilvlInput:SetScript("OnEscapePressed", function(self)
+        self:SetText(tostring(EAL_DB.ilvlSellThreshold or 199))
+        self:ClearFocus()
+    end)
+    ilvlInput:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffffd700iLvl threshold|r")
+        GameTooltip:AddLine("|cffaaaaaaGear at or below this item level is sold|r")
+        GameTooltip:AddLine("|cffaaaaaawhen you click the quick-sell button.|r")
+        GameTooltip:AddLine("|cffaaaaaaPress Enter to save.|r")
+        GameTooltip:Show()
+    end)
+    ilvlInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Savage PvP deletion (confirmation required)
+    MakeDivider(win, -412)
     local savageBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    savageBtn:SetPoint("TOPLEFT", 18, -392)
+    savageBtn:SetPoint("TOPLEFT", 18, -422)
     savageBtn:SetWidth(304); savageBtn:SetHeight(22)
     savageBtn:SetText("Delete All Savage PvP Gear from Bags")
     savageBtn:GetNormalFontObject():SetTextColor(1, 0.35, 0.35)
@@ -1351,11 +1549,11 @@ local function EAL_BuildGUI()
     })
 
     -- Whitelist section
-    MakeDivider(win, -422)
-    MakeHeader(win, "ITEM WHITELIST  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -432)
+    MakeDivider(win, -452)
+    MakeHeader(win, "ITEM WHITELIST  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -462)
 
     local inputBox = CreateFrame("EditBox", "EAL_BlacklistInput", win, "InputBoxTemplate")
-    inputBox:SetPoint("TOPLEFT", 18, -454)
+    inputBox:SetPoint("TOPLEFT", 18, -484)
     inputBox:SetWidth(184); inputBox:SetHeight(20)
     inputBox:SetAutoFocus(false)
     inputBox:SetMaxLetters(64)
@@ -1380,7 +1578,7 @@ local function EAL_BuildGUI()
     end)
 
     local addAcctBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addAcctBtn:SetPoint("TOPLEFT", 208, -452)
+    addAcctBtn:SetPoint("TOPLEFT", 208, -482)
     addAcctBtn:SetWidth(56); addAcctBtn:SetHeight(22)
     addAcctBtn:SetText("+Acct")
     addAcctBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_DB.blacklist) end)
@@ -1389,7 +1587,7 @@ local function EAL_BuildGUI()
     })
 
     local addCharBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addCharBtn:SetPoint("TOPLEFT", 266, -452)
+    addCharBtn:SetPoint("TOPLEFT", 266, -482)
     addCharBtn:SetWidth(56); addCharBtn:SetHeight(22)
     addCharBtn:SetText("+Char")
     addCharBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_CDB.blacklist) end)
@@ -1398,13 +1596,13 @@ local function EAL_BuildGUI()
     })
 
     local tomeBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    tomeBtn:SetPoint("TOPLEFT", 18, -478)
+    tomeBtn:SetPoint("TOPLEFT", 18, -508)
     tomeBtn:SetWidth(244); tomeBtn:SetHeight(22)
     tomeBtn:SetText('Whitelist all "Tome of Echo:" in bags')
     tomeBtn:SetScript("OnClick", EAL_WhitelistTomes)
 
     local resetBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    resetBtn:SetPoint("TOPLEFT", 266, -478)
+    resetBtn:SetPoint("TOPLEFT", 266, -508)
     resetBtn:SetWidth(56); resetBtn:SetHeight(22)
     resetBtn:SetText("Clear")
     resetBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
@@ -1419,7 +1617,7 @@ local function EAL_BuildGUI()
     -- Scrollable whitelist
     local TRACK_W = 8
     local listBg = CreateFrame("Frame", nil, win)
-    listBg:SetPoint("TOPLEFT", 14, -506)
+    listBg:SetPoint("TOPLEFT", 14, -536)
     listBg:SetWidth(312); listBg:SetHeight(MAX_ROWS * ROW_HEIGHT + 8)
     listBg:SetBackdrop({
         bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -1659,12 +1857,14 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         EAL_UpdateStatus()
     elseif cmd == "sell" then
         StartSellCycle()
+    elseif cmd == "ilvlsell" or cmd == "lowilvl" then
+        EAL_PromptSellLowILvl()
     elseif cmd == "minimap" then
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()

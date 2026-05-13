@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.1.0] - 2026-04-24
+
+### Added
+- **Quick-sell by item level.** New button in the settings window: *"Sell gear at iLvl N or below"*, with an editable threshold field (default 199). On private servers like **Project Ebonhold** where gear at iLvl 200+ has crafting / upgrade uses and gear ≤ 199 is safe junk, this clears a full bag of obsolete soulbound drops in one click. Filters down to equippable gear only (`equipLoc ~= ""`) with a real vendor price (`sellPrice > 0`), respects the account + per-character whitelist, never touches trade goods, quest items, or no-vendor-price tokens. Shows a confirmation popup with item count + estimated gold value. Sells in throttled batches at the currently-open vendor (same batching and Fast-Mode behavior as the main sell cycle). Slash command: `/eal ilvlsell`. Window height grew from 740 → 770 to fit the new row.
+
 ## [4.0.2] - 2026-04-24
 
 ### Legal

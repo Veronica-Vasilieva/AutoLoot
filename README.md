@@ -10,6 +10,9 @@ Open with `/eal`, `/autoloot`, or the minimap button.
 
 ## Features
 
+### Quick-sell by item level
+- **One-click "Sell gear at iLvl ≤ N or below"** — for servers (like **Project Ebonhold**) where gear above a specific item level has crafting/upgrade uses and everything below it is junk. Default threshold is **199**, fully editable. Filters down to equippable gear only (never trade goods, quest items, or items without a vendor price), respects your whitelist, and shows a confirmation popup with the item count and estimated gold value. Sells in throttled batches at the currently-open vendor. Slash: `/eal ilvlsell`.
+
 ### Core loop
 - **Auto-loot cycle** — Summons your configured *loot companion* and watches bags. When every slot fills, dismisses it and summons your *vendor companion*.
 - **Auto-repair + auto-sell** — The moment any merchant window opens (that the addon triggered), `RepairAllItems()` fires, then qualifying items are sold in batches of **45 per pulse** with a **1.0s pause** between batches. A single summary prints when done.
@@ -70,6 +73,7 @@ If your server uses different names (or a different language), open the AutoLoot
 | `/eal toggle` | Enable/disable the loot+sell cycle |
 | `/eal enable` / `/eal disable` | Explicit on/off |
 | `/eal sell` | Force a sell cycle now |
+| `/eal ilvlsell` | Sell all equippable gear at or below the configured iLvl threshold (default 199), with a confirmation popup |
 | `/eal reset` | Clear whitelist (confirmation required) |
 | `/eal minimap` | Show/hide the minimap button |
 | `/eal help` | Print the command list |
