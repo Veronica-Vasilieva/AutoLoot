@@ -19,11 +19,11 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.1.0"
+local ADDON_VERSION = "4.2.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
-local CURRENT_SCHEMA = 2
+local CURRENT_SCHEMA = 3
 
 -- Provenance globals. Used by external diagnostic tools and crash
 -- reporters to identify the addon and route bug reports upstream.
@@ -64,7 +64,20 @@ local DEFAULTS = {
     lootCompanion     = "Greedy Scavenger",
     vendorCompanion   = "Goblin Merchant",
     sellOnAnyVendor   = false,   -- when false, only auto-sell when we actively triggered the sell cycle
-    autoDeleteRares   = false,   -- silently delete rare items with no vendor price (OPT-IN: dangerous)
+
+    -- Auto-delete unsellable items by quality (OPT-IN: dangerous).
+    -- Replaced the legacy autoDeleteRares boolean in schema v3. Old saves
+    -- with autoDeleteRares = true are migrated to enabled+rare in
+    -- RunMigrations.  Each per-quality flag is independently toggleable
+    -- but only takes effect when the master `enabled` flag is on.
+    autoDeleteUnsellable = {
+        enabled  = false,
+        common   = false,   -- white items (Q_WHITE = 1)
+        uncommon = false,   -- green items (Q_UNCOMMON = 2)
+        rare     = false,   -- blue items  (Q_RARE = 3)
+        epic     = false,   -- purple      (Q_EPIC = 4)
+    },
+
     soundEnabled      = true,
     playSoundOnSell   = true,
     showMinimapButton = true,
@@ -750,12 +763,28 @@ local function CheckCompanionStuck()
     end
 end
 
--- OPT-IN: Scans bags for Rare-quality items with no vendor price and deletes
--- them one at a time. Off by default; controlled by EAL_DB.autoDeleteRares.
-local g_deletingRares = false
-local function EAL_DeleteUnsellableRares()
-    if not EAL_DB.autoDeleteRares then return end
-    if g_deletingRares or InCombatLockdown() then return end
+-- OPT-IN: Scans bags for items with NO vendor price whose quality is in the
+-- user-configured per-quality set, and deletes them one at a time.
+-- Controlled by EAL_DB.autoDeleteUnsellable = { enabled, common, uncommon, rare, epic }.
+-- The Grey/Poor tier is intentionally excluded -- grey items always have a
+-- vendor price by design and would never match the "no sell price" filter.
+local g_deletingUnsellable = false
+
+local function EAL_IsAutoDeleteQuality(quality)
+    local cfg = EAL_DB and EAL_DB.autoDeleteUnsellable
+    if not cfg or not cfg.enabled then return false end
+    if quality == Q_WHITE    and cfg.common   then return true end
+    if quality == Q_UNCOMMON and cfg.uncommon then return true end
+    if quality == Q_RARE     and cfg.rare     then return true end
+    if quality == Q_EPIC     and cfg.epic     then return true end
+    return false
+end
+
+local function EAL_DeleteUnsellableItems()
+    local cfg = EAL_DB and EAL_DB.autoDeleteUnsellable
+    if not cfg or not cfg.enabled then return end
+    if not (cfg.common or cfg.uncommon or cfg.rare or cfg.epic) then return end
+    if g_deletingUnsellable or InCombatLockdown() then return end
 
     local toDelete = {}
     for bag = 0, 4 do
@@ -765,11 +794,11 @@ local function EAL_DeleteUnsellableRares()
             if link then
                 local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
                 if name
-                    and quality == Q_RARE
+                    and EAL_IsAutoDeleteQuality(quality)
                     and (not vendorPrice or vendorPrice == 0)
                     and not IsBlacklisted(name)
                 then
-                    table.insert(toDelete, { bag = bag, slot = slot })
+                    table.insert(toDelete, { bag = bag, slot = slot, quality = quality })
                 end
             end
         end
@@ -777,13 +806,13 @@ local function EAL_DeleteUnsellableRares()
 
     if #toDelete == 0 then return end
 
-    g_deletingRares = true
+    g_deletingUnsellable = true
     local total = #toDelete
 
     local function DeleteNext(idx)
         if idx > #toDelete then
-            g_deletingRares = false
-            Print("|cffffff00" .. total .. "|r unsellable rare(s) with no sell price deleted.")
+            g_deletingUnsellable = false
+            Print("|cffffff00" .. total .. "|r unsellable item(s) with no sell price deleted.")
             return
         end
         local item = toDelete[idx]
@@ -791,7 +820,7 @@ local function EAL_DeleteUnsellableRares()
         if link then
             local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
             if name
-                and quality == Q_RARE
+                and EAL_IsAutoDeleteQuality(quality)
                 and (not vendorPrice or vendorPrice == 0)
                 and not IsBlacklisted(name)
             then
@@ -848,7 +877,7 @@ local function OnUpdate(self, elapsed)
         if bagCheckTimer >= (EAL_DB.checkInterval or 3) then
             bagCheckTimer = 0
             EAL_UpdateStatus()
-            EAL_DeleteUnsellableRares()
+            EAL_DeleteUnsellableItems()
             CheckCompanionStuck()
         end
     end
@@ -909,13 +938,14 @@ StaticPopupDialogs["AUTOLOOT_CONFIRM_SELL_LOW_ILVL"] = {
 }
 
 StaticPopupDialogs["AUTOLOOT_CONFIRM_AUTODELETE_RARES"] = {
-    text         = "Enable automatic deletion of Rare items with no vendor price?\n\n|cffff4444This silently deletes rare items every few seconds. Some rare quest items, tokens, and unique gear have no vendor price and will be destroyed.|r\n\nOnly enable if you understand what this does.",
+    text         = "Enable automatic deletion of unsellable items?\n\n|cffff4444This silently deletes items with NO vendor price, for the quality tiers you have ticked below. Some quest items, tokens, and unique gear have no vendor price and will be destroyed.|r\n\nOnly enable if you understand what this does.",
     button1      = "Enable",
     button2      = "Cancel",
     OnAccept     = function()
-        EAL_DB.autoDeleteRares = true
+        EAL_DB.autoDeleteUnsellable = EAL_DB.autoDeleteUnsellable or {}
+        EAL_DB.autoDeleteUnsellable.enabled = true
         if g_autoDelCb then g_autoDelCb:SetChecked(true) end
-        Print("Auto-delete unsellable rares: |cffff4444ENABLED|r.")
+        Print("Auto-delete unsellable: |cffff4444ENABLED|r.")
         EAL_UpdateStatus()
     end,
     timeout      = 0,
@@ -1148,7 +1178,7 @@ end
 
 local function EAL_BuildGUI()
     local win = CreateFrame("Frame", "EAL_Window", UIParent)
-    win:SetWidth(340); win:SetHeight(770)
+    win:SetWidth(340); win:SetHeight(820)
     win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", EAL_DB.windowX, EAL_DB.windowY)
     win:SetFrameStrata("HIGH")
     win:SetMovable(true)
@@ -1434,32 +1464,39 @@ local function EAL_BuildGUI()
             "|cffaaaaaa(repair vendors, quest vendors, etc).|r",
         })
 
-    -- Auto-delete rares — opt-in via confirmation popup
+    -- Auto-delete unsellable -- master toggle. Opt-in via confirmation popup.
+    -- The four sub-checkboxes below it (Common / Uncommon / Rare / Epic)
+    -- pick which quality tiers the cycle actually touches.
+    EAL_DB.autoDeleteUnsellable = EAL_DB.autoDeleteUnsellable or {
+        enabled = false, common = false, uncommon = false,
+        rare = false, epic = false,
+    }
+
     local autoDelCb = CreateFrame("CheckButton", nil, win, "UICheckButtonTemplate")
     autoDelCb:SetPoint("TOPLEFT", 18, -358)
     autoDelCb:SetWidth(24); autoDelCb:SetHeight(24)
-    autoDelCb:SetChecked(EAL_DB.autoDeleteRares)
+    autoDelCb:SetChecked(EAL_DB.autoDeleteUnsellable.enabled)
     local autoDelLbl = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     autoDelLbl:SetPoint("LEFT", autoDelCb, "RIGHT", 1, 0)
-    autoDelLbl:SetText("|cffff4444Auto-delete unsellable rares|r")
+    autoDelLbl:SetText("|cffff4444Auto-delete unsellable|r")
     autoDelCb:SetScript("OnClick", function(self)
         if self:GetChecked() then
             self:SetChecked(false) -- require confirmation before actually enabling
             StaticPopup_Show("AUTOLOOT_CONFIRM_AUTODELETE_RARES")
         else
-            EAL_DB.autoDeleteRares = false
-            Print("Auto-delete unsellable rares: |cffaaaaaaDISABLED|r.")
+            EAL_DB.autoDeleteUnsellable.enabled = false
+            Print("Auto-delete unsellable: |cffaaaaaaDISABLED|r.")
         end
     end)
     autoDelCb:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("|cffff4444Auto-delete unsellable rares|r")
-        GameTooltip:AddLine("|cffff9900WARNING: silently deletes rare items|r")
-        GameTooltip:AddLine("|cffff9900with no vendor price every few seconds.|r")
-        GameTooltip:AddLine("|cffaaaaaaSome quest items and tokens have no|r")
-        GameTooltip:AddLine("|cffaaaaaavendor price and will be destroyed.|r")
-        GameTooltip:AddLine("|cffaaaaaaOFF by default. Use only if you know|r")
-        GameTooltip:AddLine("|cffaaaaaawhat this does.|r")
+        GameTooltip:AddLine("|cffff4444Auto-delete unsellable items|r")
+        GameTooltip:AddLine("|cffff9900WARNING: silently deletes items with|r")
+        GameTooltip:AddLine("|cffff9900no vendor price every few seconds.|r")
+        GameTooltip:AddLine("|cffaaaaaaThe ticks below choose which quality|r")
+        GameTooltip:AddLine("|cffaaaaaatiers are affected. Some quest items|r")
+        GameTooltip:AddLine("|cffaaaaaaand tokens have no vendor price and|r")
+        GameTooltip:AddLine("|cffaaaaaawill be destroyed.  OFF by default.|r")
         GameTooltip:Show()
     end)
     autoDelCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1474,12 +1511,45 @@ local function EAL_BuildGUI()
             "|cffaaaaaawhen the vendor companion is ready.|r",
         })
 
+    -- Per-quality sub-checkboxes for auto-delete-unsellable.
+    -- Grey/Poor is intentionally absent: grey items always have a vendor
+    -- price by design and would never match the "no sell price" filter.
+    local subDefs = {
+        { key = "common",   text = "|cffffffffCommon|r",   x = 30,  y = -380 },
+        { key = "uncommon", text = "|cff1eff00Uncommon|r", x = 130, y = -380 },
+        { key = "rare",     text = "|cff0070ddRare|r",     x = 240, y = -380 },
+        { key = "epic",     text = "|cffa335eeEpic|r",     x = 30,  y = -404 },
+    }
+    for _, def in ipairs(subDefs) do
+        local cb = CreateFrame("CheckButton", nil, win, "UICheckButtonTemplate")
+        cb:SetPoint("TOPLEFT", def.x, def.y)
+        cb:SetWidth(22); cb:SetHeight(22)
+        cb:SetChecked(EAL_DB.autoDeleteUnsellable[def.key])
+        local lbl = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lbl:SetPoint("LEFT", cb, "RIGHT", 1, 0)
+        lbl:SetText(def.text)
+        cb:SetScript("OnClick", function(self)
+            EAL_DB.autoDeleteUnsellable[def.key] = self:GetChecked() and true or false
+        end)
+        local capturedKey = def.key
+        cb:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine("|cffff4444Delete unsellable " .. capturedKey .. " items|r")
+            GameTooltip:AddLine("|cffaaaaaaWhen the master toggle is on, items of|r")
+            GameTooltip:AddLine("|cffaaaaaathis quality with no vendor price are|r")
+            GameTooltip:AddLine("|cffaaaaaadeleted every few seconds during the|r")
+            GameTooltip:AddLine("|cffaaaaaaloot cycle.|r")
+            GameTooltip:Show()
+        end)
+        cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
+
     -- Quick-sell by item level row (server-specific helper:
     -- on Ebonhold and similar servers, gear >= iLvl 200 has crafting /
     -- upgrade uses while gear <=199 is safe junk).
-    MakeDivider(win, -382)
+    MakeDivider(win, -430)
     local quickSellBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    quickSellBtn:SetPoint("TOPLEFT", 18, -392)
+    quickSellBtn:SetPoint("TOPLEFT", 18, -440)
     quickSellBtn:SetWidth(246); quickSellBtn:SetHeight(22)
     local function UpdateQuickSellBtnText()
         quickSellBtn:SetText("Sell gear at iLvl " ..
@@ -1501,7 +1571,7 @@ local function EAL_BuildGUI()
     })
 
     local ilvlInput = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
-    ilvlInput:SetPoint("TOPLEFT", 280, -390)
+    ilvlInput:SetPoint("TOPLEFT", 280, -438)
     ilvlInput:SetWidth(42); ilvlInput:SetHeight(20)
     ilvlInput:SetAutoFocus(false)
     ilvlInput:SetMaxLetters(4)
@@ -1533,9 +1603,9 @@ local function EAL_BuildGUI()
     ilvlInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- Savage PvP deletion (confirmation required)
-    MakeDivider(win, -412)
+    MakeDivider(win, -460)
     local savageBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    savageBtn:SetPoint("TOPLEFT", 18, -422)
+    savageBtn:SetPoint("TOPLEFT", 18, -470)
     savageBtn:SetWidth(304); savageBtn:SetHeight(22)
     savageBtn:SetText("Delete All Savage PvP Gear from Bags")
     savageBtn:GetNormalFontObject():SetTextColor(1, 0.35, 0.35)
@@ -1549,11 +1619,11 @@ local function EAL_BuildGUI()
     })
 
     -- Whitelist section
-    MakeDivider(win, -452)
-    MakeHeader(win, "ITEM WHITELIST  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -462)
+    MakeDivider(win, -500)
+    MakeHeader(win, "ITEM WHITELIST  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -510)
 
     local inputBox = CreateFrame("EditBox", "EAL_BlacklistInput", win, "InputBoxTemplate")
-    inputBox:SetPoint("TOPLEFT", 18, -484)
+    inputBox:SetPoint("TOPLEFT", 18, -532)
     inputBox:SetWidth(184); inputBox:SetHeight(20)
     inputBox:SetAutoFocus(false)
     inputBox:SetMaxLetters(64)
@@ -1578,7 +1648,7 @@ local function EAL_BuildGUI()
     end)
 
     local addAcctBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addAcctBtn:SetPoint("TOPLEFT", 208, -482)
+    addAcctBtn:SetPoint("TOPLEFT", 208, -530)
     addAcctBtn:SetWidth(56); addAcctBtn:SetHeight(22)
     addAcctBtn:SetText("+Acct")
     addAcctBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_DB.blacklist) end)
@@ -1587,7 +1657,7 @@ local function EAL_BuildGUI()
     })
 
     local addCharBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addCharBtn:SetPoint("TOPLEFT", 266, -482)
+    addCharBtn:SetPoint("TOPLEFT", 266, -530)
     addCharBtn:SetWidth(56); addCharBtn:SetHeight(22)
     addCharBtn:SetText("+Char")
     addCharBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_CDB.blacklist) end)
@@ -1596,13 +1666,13 @@ local function EAL_BuildGUI()
     })
 
     local tomeBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    tomeBtn:SetPoint("TOPLEFT", 18, -508)
+    tomeBtn:SetPoint("TOPLEFT", 18, -556)
     tomeBtn:SetWidth(244); tomeBtn:SetHeight(22)
     tomeBtn:SetText('Whitelist all "Tome of Echo:" in bags')
     tomeBtn:SetScript("OnClick", EAL_WhitelistTomes)
 
     local resetBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    resetBtn:SetPoint("TOPLEFT", 266, -508)
+    resetBtn:SetPoint("TOPLEFT", 266, -556)
     resetBtn:SetWidth(56); resetBtn:SetHeight(22)
     resetBtn:SetText("Clear")
     resetBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
@@ -1617,7 +1687,7 @@ local function EAL_BuildGUI()
     -- Scrollable whitelist
     local TRACK_W = 8
     local listBg = CreateFrame("Frame", nil, win)
-    listBg:SetPoint("TOPLEFT", 14, -536)
+    listBg:SetPoint("TOPLEFT", 14, -584)
     listBg:SetWidth(312); listBg:SetHeight(MAX_ROWS * ROW_HEIGHT + 8)
     listBg:SetBackdrop({
         bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -1766,6 +1836,22 @@ local function RunMigrations(db, cdb)
     -- v1 -> v2: introduced per-character whitelist; no data moves, just mark.
     if from < 2 then
         db.schemaVersion = 2
+    end
+
+    -- v2 -> v3: split the single autoDeleteRares boolean into a per-quality
+    -- table.  If the user had autoDeleteRares = true under v2, preserve
+    -- their existing behavior by enabling the master + Rare quality only.
+    if from < 3 then
+        db.autoDeleteUnsellable = db.autoDeleteUnsellable or {
+            enabled = false, common = false, uncommon = false,
+            rare = false, epic = false,
+        }
+        if db.autoDeleteRares then
+            db.autoDeleteUnsellable.enabled = true
+            db.autoDeleteUnsellable.rare    = true
+        end
+        db.autoDeleteRares = nil   -- old field no longer used
+        db.schemaVersion   = 3
     end
 
     cdb.schemaVersion = CURRENT_SCHEMA

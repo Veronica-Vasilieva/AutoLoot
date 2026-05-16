@@ -23,7 +23,7 @@ Open with `/eal`, `/autoloot`, or the minimap button.
 
 ### Safety & trust
 - **No auto-sell at random vendors** — By default, AutoLoot only sells when it actively triggered the cycle. Repair vendors and quest NPCs are *not* touched. There's a separate `Sell at any vendor` toggle if you want the old aggressive behavior.
-- **Auto-delete unsellable rares is opt-in** — The "delete rares with no vendor price" behavior is OFF by default and requires an explicit confirmation dialog to enable. (Quest items and some tokens have no vendor price.)
+- **Auto-delete unsellable items is opt-in and per-quality** — A master toggle (off by default, gated by a confirmation popup) plus four independent per-rarity ticks: **Common / Uncommon / Rare / Epic**. Only items with **no vendor price** are deleted, and only for tiers you've ticked. Grey/Poor is excluded by design (grey items always have a vendor price). Quest items and some tokens have no vendor price, so use this carefully — whitelist anything you want to keep.
 - **Confirmation popups** on every destructive action — `Delete Savage PvP Gear`, `Clear Whitelist`, and `/eal reset` all prompt before executing.
 
 ### Customization

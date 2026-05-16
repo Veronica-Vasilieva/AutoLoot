@@ -1,5 +1,12 @@
 # Changelog — AutoLoot
 
+## [4.2.0] - 2026-04-24
+
+### Changed
+- **Auto-delete unsellable items is now per-quality.** Previously the toggle covered only Rare items; the new setting splits into a master enable plus four independently-toggleable quality tiers — **Common**, **Uncommon**, **Rare**, **Epic**. The master toggle still requires the same confirmation popup, but once enabled you can pick which rarities the cycle actually touches. Grey/Poor is excluded — grey items always have a vendor price by design and would never match the "no sell price" filter.
+- **Schema bumped to v3** with an automatic migration: anyone who had the legacy `autoDeleteRares = true` setting under v2 gets `autoDeleteUnsellable.enabled = true` and `autoDeleteUnsellable.rare = true` on first load, preserving their previous behavior exactly.
+- **Window height grew 770 → 820** to fit the expanded BEHAVIOR section.
+
 ## [4.1.0] - 2026-04-24
 
 ### Added
