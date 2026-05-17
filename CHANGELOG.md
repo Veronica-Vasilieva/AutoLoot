@@ -1,5 +1,20 @@
 # Changelog — AutoLoot
 
+## [4.8.0] - 2026-05-17
+
+### Added — Sell preview window
+- **Opt-in preview before every sell cycle.** New per-character toggle on the General tab: *"Show preview before each sell cycle"*. When enabled, every sell cycle pauses after the auto-repair step and shows a standalone window listing each item that would be sold under current quality / whitelist / price-cap settings.
+  - Item icon, colored name (by quality), stack count, per-row estimated vendor value, total in the header.
+  - Up to 12 rows visible at once; mouse-wheel to scroll if your bags have more.
+  - **Per-row checkbox.** All boxes start checked (everything will sell). Uncheck to skip individual stacks — even multiple stacks of the same item are kept separate (you can sell stack 1 of Linen Cloth and keep stack 2).
+  - **Sell** button confirms and runs the cycle with your skips honored.
+  - **Cancel** button aborts the cycle entirely and leaves the merchant frame open so you can vendor manually if you prefer.
+- **Per-slot skip is validated at sell time.** The skip set is keyed by `bag:slot` and includes the item name the user saw in the preview. If the slot's contents have changed between preview-show and sell-time (e.g. you looted into that slot), the skip silently lapses and the new item sells normally. No safe item is ever skipped by mistake; no dangerous "skip everything in this slot forever" leakage.
+- **Default OFF.** Existing users see zero change in behavior unless they tick the new checkbox.
+
+### Migration
+- `EAL_CharDB.sellPreview = false` added on first load via `MergeDefaults`. No schema bump.
+
 ## [4.7.1] - 2026-05-17
 
 ### Fixed
