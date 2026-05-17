@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.10.0"
+local ADDON_VERSION = "4.10.1"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR

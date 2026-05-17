@@ -1,5 +1,15 @@
 # Changelog — AutoLoot
 
+## [4.10.1] - 2026-05-17
+
+### Added — image resizer tool
+- **`Tools/Resize-Background.ps1`** — PowerShell script that loads any common image format (PNG / JPG / BMP / GIF / TIFF), rescales with high-quality bicubic filtering, and writes a 32-bit uncompressed TGA that WoW 3.3.5a loads directly. Pure PowerShell + .NET System.Drawing — no external dependencies. The TGA writer is built in (System.Drawing can't save TGA on its own, so we write the 18-byte header + BGRA pixel bytes directly).
+- **`Tools/Install-Background.bat`** — one-click double-click wrapper. Opens a file picker, resizes to 1024×512, drops the result straight into `Media/Background.tga`, prints a "/reload" reminder. Bypasses PowerShell's execution policy via the standard `-ExecutionPolicy Bypass` flag, no global policy change required.
+- Defaults: **1024×512** (power-of-2 landscape, matches the new 720×520 window aspect). Customizable via `-Width` / `-Height` parameters when invoked from a PS prompt. Run with `-ToAddon` to auto-install into the addon's `Media/` folder.
+
+### Verified
+- Test run on a synthetic 1530×980 PNG produced a 2,097,170-byte TGA (18-byte header + 1024×512×4 BGRA pixel data). Header decodes cleanly: image type 2 (uncompressed true-color), width 1024, height 512, 32 bpp, descriptor `0x28` (top-left origin + 8-bit alpha).
+
 ## [4.10.0] - 2026-05-17
 
 ### Changed — landscape window + custom background image
