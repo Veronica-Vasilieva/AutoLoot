@@ -1,5 +1,24 @@
 # Changelog — AutoLoot
 
+## [4.9.0] - 2026-05-17
+
+### Removed
+- **Sell preview window (v4.8.0).** The server-side workflow this addon is built around emphasizes speedy loot / sell / reloot cycles; an opt-in pause-and-review step was the wrong fit. The whole feature is gone — function definitions, the General-tab toggle, the per-character SavedVariable, and the routing hook in `OnMerchantShow`. `EAL_CharDB.sellPreview` is harmless if it lingers in old saves; it's simply ignored.
+- Per-row item filtering at sell time remains available through the **per-quality**, **per-iLvl**, **sell-price-cap**, and **whitelist** controls — those are the supported way to keep specific items from being vendored.
+
+### Cancelled
+- **AH-value integration (planned v4.9.0).** Not shipping. The original idea was to detect Auctioneer / TradeSkillMaster as an optional dependency and skip selling items whose AH market value far exceeds their vendor price. Cancelled because the typical server target doesn't run those addons and the sell-price cap already covers the high-value-BoE case cleanly.
+
+### Changed — visual reskin
+- **Window backdrop tint is now violet** instead of dark brown: `SetBackdropColor(0.18, 0.10, 0.30, 0.85)`. Slightly more translucent than before (alpha 0.85 vs 0.95) per the brief.
+- **Border is now lighter purple**: `SetBackdropBorderColor(0.75, 0.55, 0.95, 1)`.
+- **Corner accents** (the L-brackets at each corner) recolored to pale lavender. Renamed `GoldCorner` → `AccentCorner` to reflect they're no longer gold.
+- **Section dividers** recolored from dusty gold to medium purple.
+- **Tab buttons** vertex-tinted to a lighter shade of purple than the main window — meets the brief of "tab buttons being a lighter colour of purple." Active tab text is bright white-lavender; inactive tabs are medium purple.
+- **Info badge** background tint matches the window backdrop now.
+- **Companion-name panel hairline border** + **scroll thumbs** recolored from gold to purple.
+- A custom background image will be slotted in here when you provide it — the `SetBackdrop` call already has a `bgFile` field that's straightforward to swap out.
+
 ## [4.8.0] - 2026-05-17
 
 ### Added — Sell preview window

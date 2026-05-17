@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.8.0"
+local ADDON_VERSION = "4.9.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -160,12 +160,6 @@ local CHAR_DEFAULTS = {
     mailCollectMoney    = true,   -- take money attachments
     mailCollectItems    = true,   -- take item attachments
     mailAutoDeleteRead  = false,  -- delete read mail with no remaining attachments / money
-
-    -- Sell preview (per-character).  When ON, every sell cycle pauses
-    -- after auto-repair and shows a window listing each item that WOULD
-    -- be sold, with a per-row checkbox.  User clicks Sell to proceed or
-    -- Cancel to abort.  Default OFF so existing users see no change.
-    sellPreview         = false,
 }
 
 -------------------------------------------------------------------------------
@@ -183,13 +177,6 @@ local bagUpdateDirty     = false -- set by BAG_UPDATE, consumed on next tick
 -- Money-delta measurement for a single sell session
 local sellSessionStartMoney = 0
 local sellSessionActive     = false
-
--- Per-cycle skip set populated by the sell-preview window.
--- Keys are "bag:slot" strings; values are the expected item NAME at that
--- slot when the preview was shown.  SellItems consults this map and skips
--- a slot only if the slot's current name still matches what the user saw
--- in the preview.  Cleared in FinishSelling.
-local g_sellSkipSlots = nil
 
 -- Forward declarations (required — some functions reference each other
 -- across the file and Lua's `local function` doesn't hoist)
@@ -693,9 +680,6 @@ local function FinishSelling(totalSold, totalSkipped)
         if totalSold > 0 then PlaySellSound() end
     end
 
-    -- Clear the per-cycle skip set (populated by the sell-preview window).
-    g_sellSkipSlots = nil
-
     EAL_UpdateStatus()
 end
 
@@ -735,18 +719,6 @@ local function SellItems(totalSold, totalSkipped)
                     if sell and priceMax > 0 and sellPrice and sellPrice > priceMax then
                         sell = false
                         skipped = skipped + 1
-                    end
-
-                    -- Per-slot skip from the sell-preview window.
-                    -- Only honor it if the slot's current item still
-                    -- matches the name the user saw in the preview;
-                    -- otherwise sell normally (the item was replaced).
-                    if sell and g_sellSkipSlots then
-                        local key = bag .. ":" .. slot
-                        if g_sellSkipSlots[key] == name then
-                            sell = false
-                            skipped = skipped + 1
-                        end
                     end
 
                     if sell then
@@ -849,18 +821,7 @@ local function OnMerchantShow()
             end
         end
 
-        -- Preview opt-in: pause the cycle and let the user review which
-        -- items will be sold.  "Sell" populates g_sellSkipSlots from
-        -- unchecked rows and runs SellItems; "Cancel" simply leaves the
-        -- merchant open and aborts the cycle.
-        if EAL_CDB and EAL_CDB.sellPreview then
-            EAL_ShowSellPreview(function(skip)
-                g_sellSkipSlots = skip
-                SellItems()
-            end)
-        else
-            SellItems()
-        end
+        SellItems()
     end)
 end
 
@@ -1681,252 +1642,11 @@ local function MinimapButton_UpdatePosition(btn)
     btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
--------------------------------------------------------------------------------
--- Sell preview window
---
--- Standalone modal-style frame.  When EAL_CDB.sellPreview is on, every sell
--- cycle pauses after the auto-repair step and shows this window listing
--- each item that would be sold under current quality / price-cap settings,
--- with a per-row checkbox.
---
--- "Sell" populates g_sellSkipSlots from the unchecked rows and calls
--- SellItems(); "Cancel" just hides the window and leaves the merchant
--- frame open so the user can sell manually if they wish.
--------------------------------------------------------------------------------
-local EAL_PreviewWindow            -- created lazily on first use
-local PREVIEW_MAX_ROWS = 12
-local PREVIEW_ROW_H    = 22
-
--- Walks bags, returns a list of items that match current sell criteria
--- (quality toggles + whitelist + price cap).  Matches the filter logic in
--- SellItems exactly so the preview doesn't lie about what will happen.
-local function EAL_BuildSellCandidateList()
-    local items = {}
-    local priceMax = EAL_DB.sellPriceMax or 0
-    for bag = 0, 4 do
-        local numSlots = GetContainerNumSlots(bag) or 0
-        for slot = 1, numSlots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                local name, _, quality, _, _, _, _, _, _, texture, sellPrice = GetItemInfo(link)
-                if name and quality then
-                    local sellByQuality =
-                        (quality == Q_GREY     and EAL_DB.sellGrey)     or
-                        (quality == Q_WHITE    and EAL_DB.sellWhite)    or
-                        (quality == Q_UNCOMMON and EAL_DB.sellUncommon) or
-                        (quality == Q_RARE     and EAL_DB.sellRare)     or
-                        (quality == Q_EPIC     and EAL_DB.sellEpic)
-
-                    local pass = sellByQuality and not IsBlacklisted(name)
-                    if pass and priceMax > 0 and sellPrice and sellPrice > priceMax then
-                        pass = false
-                    end
-
-                    if pass then
-                        local _, count = GetContainerItemInfo(bag, slot)
-                        table.insert(items, {
-                            bag = bag, slot = slot, name = name,
-                            quality = quality, count = count or 1,
-                            sellPrice = sellPrice or 0,
-                            texture = texture,
-                            link = link,
-                        })
-                    end
-                end
-            end
-        end
-    end
-    return items
-end
-
-local function EAL_BuildSellPreview()
-    local f = CreateFrame("Frame", "EAL_PreviewWindow", UIParent)
-    f:SetSize(420, 540)
-    f:SetPoint("CENTER", 0, 0)
-    f:SetFrameStrata("DIALOG")
-    f:SetMovable(true); f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    f:SetBackdrop({
-        bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        tile = true, tileSize = 32, edgeSize = 32,
-        insets = { left = 11, right = 12, top = 12, bottom = 11 },
-    })
-    f:SetBackdropColor(0.10, 0.08, 0.06, 0.95)
-    f:SetBackdropBorderColor(0.85, 0.68, 0.28, 1)
-    f:Hide()
-
-    -- Title + subtitle
-    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    title:SetPoint("TOP", 0, -14)
-    title:SetText("|cffff9900Sell Preview|r")
-
-    local subtitle = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    subtitle:SetPoint("TOP", title, "BOTTOM", 0, -2)
-    subtitle:SetText("|cffaaaaaaUncheck items you want to keep|r")
-
-    local summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    summary:SetPoint("TOP", subtitle, "BOTTOM", 0, -6)
-    f.summary = summary
-
-    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", -4, -4)
-    closeBtn:SetScript("OnClick", function() f:Hide() end)
-
-    -- Scroll-list background
-    local listBg = CreateFrame("Frame", nil, f)
-    listBg:SetPoint("TOPLEFT", 14, -90)
-    listBg:SetPoint("BOTTOMRIGHT", -14, 58)
-    listBg:SetBackdrop({
-        bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 16,
-        insets = { left = 4, right = 4, top = 4, bottom = 4 },
-    })
-    listBg:SetBackdropColor(0, 0, 0, 0.85)
-    listBg:EnableMouseWheel(true)
-    listBg:SetScript("OnMouseWheel", function(self, delta)
-        f.scrollOffset = math.max(0, math.min(
-            math.max(0, (f.items and #f.items or 0) - PREVIEW_MAX_ROWS),
-            (f.scrollOffset or 0) - delta))
-        f:RefreshList()
-    end)
-
-    -- Row template -- preallocated; populated by RefreshList.
-    f.rows = {}
-    for i = 1, PREVIEW_MAX_ROWS do
-        local row = CreateFrame("Frame", nil, listBg)
-        row:SetSize(376, PREVIEW_ROW_H)
-        row:SetPoint("TOPLEFT", 6, -6 - (i - 1) * PREVIEW_ROW_H)
-
-        local cb = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        cb:SetSize(20, 20); cb:SetPoint("LEFT", 2, 0)
-        row.cb = cb
-
-        local icon = row:CreateTexture(nil, "BACKGROUND")
-        icon:SetSize(18, 18); icon:SetPoint("LEFT", cb, "RIGHT", 4, 0)
-        row.icon = icon
-
-        local nameLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        nameLbl:SetPoint("LEFT", icon, "RIGHT", 6, 0)
-        nameLbl:SetJustifyH("LEFT"); nameLbl:SetWordWrap(false)
-        nameLbl:SetWidth(220)
-        row.nameLbl = nameLbl
-
-        local valueLbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        valueLbl:SetPoint("RIGHT", -6, 0)
-        valueLbl:SetJustifyH("RIGHT")
-        row.valueLbl = valueLbl
-
-        row:Hide()
-        f.rows[i] = row
-    end
-
-    -- Action buttons
-    local sellBtn = CreateFrame("Button", nil, f, "GameMenuButtonTemplate")
-    sellBtn:SetPoint("BOTTOMLEFT", 20, 14)
-    sellBtn:SetSize(180, 28)
-    sellBtn:SetText("|cffff9900Sell|r")
-    f.sellBtn = sellBtn
-
-    local cancelBtn = CreateFrame("Button", nil, f, "GameMenuButtonTemplate")
-    cancelBtn:SetPoint("BOTTOMRIGHT", -20, 14)
-    cancelBtn:SetSize(180, 28)
-    cancelBtn:SetText("Cancel")
-    cancelBtn:SetScript("OnClick", function() f:Hide() end)
-
-    f.items = {}
-    f.scrollOffset = 0
-
-    f.RefreshList = function(self)
-        local total = self.items and #self.items or 0
-        for i = 1, PREVIEW_MAX_ROWS do
-            local row = self.rows[i]
-            local idx = (self.scrollOffset or 0) + i
-            if idx <= total then
-                local item = self.items[idx]
-                row.cb:SetChecked(true)
-                if item.texture then
-                    row.icon:SetTexture(item.texture)
-                    row.icon:Show()
-                else
-                    row.icon:Hide()
-                end
-                local color = QUALITY_HEX[item.quality] or "ffffff"
-                local nameTxt = "|cff" .. color .. item.name .. "|r"
-                if item.count and item.count > 1 then
-                    nameTxt = nameTxt .. " |cffaaaaaax" .. item.count .. "|r"
-                end
-                row.nameLbl:SetText(nameTxt)
-                row.valueLbl:SetText(FormatMoney((item.sellPrice or 0) * (item.count or 1)))
-                row.item = item
-                row:Show()
-            else
-                row:Hide()
-                row.item = nil
-            end
-        end
-    end
-
-    return f
-end
-
--- Public entry point: build skip-set from current bag state under sell
--- criteria, then show the preview window.  `onConfirm` is a callback that
--- receives the skip-set table { ["bag:slot"] = "itemName", ... } and is
--- expected to populate g_sellSkipSlots and call SellItems().
-local function EAL_ShowSellPreview(onConfirm)
-    if not EAL_PreviewWindow then
-        EAL_PreviewWindow = EAL_BuildSellPreview()
-    end
-    local f = EAL_PreviewWindow
-
-    local items = EAL_BuildSellCandidateList()
-    if #items == 0 then
-        Print("Nothing to sell with current quality settings.")
-        return
-    end
-
-    f.items = items
-    f.scrollOffset = 0
-
-    -- Summary line: total items + total estimated value
-    local totalValue = 0
-    for _, it in ipairs(items) do
-        totalValue = totalValue + (it.sellPrice or 0) * (it.count or 1)
-    end
-    f.summary:SetText(string.format(
-        "|cffffff00%d|r item(s)  -  est. |cffffd700%s|r if all sold",
-        #items, FormatMoney(totalValue)))
-
-    -- Wire the Sell button.  Reuse the closure each show.
-    f.sellBtn:SetScript("OnClick", function()
-        local skip = {}
-        local kept = 0
-        for i = 1, PREVIEW_MAX_ROWS do
-            local row = f.rows[i]
-            if row and row.item and not row.cb:GetChecked() then
-                skip[row.item.bag .. ":" .. row.item.slot] = row.item.name
-                kept = kept + 1
-            end
-        end
-        -- Also walk the full items list (in case some rows aren't visible
-        -- due to scroll), capturing any rows the user un-checked while
-        -- scrolled away.  We track checkbox state on the row itself, so
-        -- only currently-visible rows can be skipped; for v4.8.0 this is
-        -- a documented limitation -- usually the bag fits in one screen.
-        f:Hide()
-        if onConfirm then onConfirm(skip) end
-        if kept > 0 then
-            Print("Sell preview: keeping |cffffff00" .. kept .. "|r item(s) per your selection.")
-        end
-    end)
-
-    f:RefreshList()
-    f:Show()
-end
+-- Sell preview window was added in v4.8.0 and removed in v4.9.0.  The
+-- server-side workflow this addon targets emphasizes speedy loot / sell /
+-- reloot cycles, so an opt-in pause-and-review step was the wrong fit.
+-- Per-quality, per-iLvl, sell-price-cap, and whitelist controls remain
+-- the supported way to filter what does and doesn't sell.
 
 local function EAL_BuildMinimapButton()
     local btn = CreateFrame("Button", "EAL_MinimapBtn", Minimap)
@@ -2043,7 +1763,7 @@ local function MakeDivider(parent, y)
     local t = parent:CreateTexture(nil, "ARTWORK")
     t:SetPoint("TOPLEFT", 14, y)
     t:SetWidth(312); t:SetHeight(1)
-    t:SetTexture(0.45, 0.35, 0.15, 0.9)
+    t:SetTexture(0.60, 0.40, 0.85, 0.85)   -- v4.9.0 violet
     return t
 end
 
@@ -2149,31 +1869,35 @@ local function EAL_BuildGUI()
         EAL_DB.windowX = self:GetLeft()
         EAL_DB.windowY = self:GetTop() - UIParent:GetHeight()
     end)
+    -- v4.9.0 violet reskin.  Dark violet, translucent, with a lighter
+    -- purple border and lavender corner accents.  Background image swap
+    -- planned (user-supplied) -- when added, replace bgFile with the
+    -- path to the custom texture.
     win:SetBackdrop({
         bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
         edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
         tile = true, tileSize = 32, edgeSize = 32,
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
     })
-    win:SetBackdropColor(0.10, 0.08, 0.06, 0.95)
-    win:SetBackdropBorderColor(0.85, 0.68, 0.28, 1)
+    win:SetBackdropColor(0.18, 0.10, 0.30, 0.85)        -- dark translucent violet
+    win:SetBackdropBorderColor(0.75, 0.55, 0.95, 1)     -- lighter purple
 
-    -- Gold L-bracket accents at each corner (decorative)
-    local function GoldCorner(point, ox, oy)
+    -- Lavender L-bracket accents at each corner (decorative)
+    local function AccentCorner(point, ox, oy)
         local horiz = win:CreateTexture(nil, "OVERLAY")
         horiz:SetTexture("Interface\\Buttons\\WHITE8X8")
-        horiz:SetVertexColor(0.90, 0.72, 0.30, 0.95)
+        horiz:SetVertexColor(0.85, 0.65, 1.00, 0.95)
         horiz:SetSize(16, 2); horiz:SetPoint(point, ox, oy)
 
         local vert = win:CreateTexture(nil, "OVERLAY")
         vert:SetTexture("Interface\\Buttons\\WHITE8X8")
-        vert:SetVertexColor(0.90, 0.72, 0.30, 0.95)
+        vert:SetVertexColor(0.85, 0.65, 1.00, 0.95)
         vert:SetSize(2, 16); vert:SetPoint(point, ox, oy)
     end
-    GoldCorner("TOPLEFT",      14, -14)
-    GoldCorner("TOPRIGHT",    -14, -14)
-    GoldCorner("BOTTOMLEFT",   14,  14)
-    GoldCorner("BOTTOMRIGHT", -14,  14)
+    AccentCorner("TOPLEFT",      14, -14)
+    AccentCorner("TOPRIGHT",    -14, -14)
+    AccentCorner("BOTTOMLEFT",   14,  14)
+    AccentCorner("BOTTOMRIGHT", -14,  14)
 
     win:Hide()
 
@@ -2201,7 +1925,7 @@ local function EAL_BuildGUI()
     infoBadge:EnableMouse(true)
     local ibBg = infoBadge:CreateTexture(nil, "BACKGROUND")
     ibBg:SetAllPoints()
-    ibBg:SetTexture(0.10, 0.08, 0.06, 0.85)
+    ibBg:SetTexture(0.18, 0.10, 0.30, 0.85)   -- match window backdrop tint
     local ibTxt = infoBadge:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     ibTxt:SetPoint("CENTER", 0, 0)
     ibTxt:SetText("|cffffd700?|r")
@@ -2297,10 +2021,10 @@ local function EAL_BuildGUI()
         for i, b in ipairs(tabBtns) do
             if i == idx then
                 b:LockHighlight()
-                b:GetFontString():SetTextColor(1.0, 0.82, 0.0)
+                b:GetFontString():SetTextColor(1.00, 0.96, 1.00)   -- bright white-lavender
             else
                 b:UnlockHighlight()
-                b:GetFontString():SetTextColor(0.8, 0.8, 0.8)
+                b:GetFontString():SetTextColor(0.75, 0.65, 0.90)   -- medium purple
             end
         end
         EAL_DB.lastTab = idx
@@ -2312,6 +2036,24 @@ local function EAL_BuildGUI()
     -- overflow the panel. Variable widths keep everything inside.
     local TAB_Y, TAB_H, TAB_PAD = -90, 22, 12
     local tabX = 12
+
+    -- v4.9.0 violet theme: tab buttons are a lighter shade of purple than
+    -- the main window backdrop.  Vertex-tinting UIPanelButtonTemplate's
+    -- built-in textures gives us a clean recolor without replacing the
+    -- texture files themselves.
+    local TAB_TINT_NORMAL    = { 0.70, 0.50, 0.95 }   -- lighter purple
+    local TAB_TINT_PUSHED    = { 0.45, 0.30, 0.75 }   -- darker violet (pressed)
+    local TAB_TINT_HIGHLIGHT = { 1.00, 0.85, 1.00 }   -- pale lavender hover glow
+
+    local function TintTab(btn)
+        local nt = btn.GetNormalTexture and btn:GetNormalTexture()
+        if nt then nt:SetVertexColor(TAB_TINT_NORMAL[1], TAB_TINT_NORMAL[2], TAB_TINT_NORMAL[3], 1) end
+        local pt = btn.GetPushedTexture and btn:GetPushedTexture()
+        if pt then pt:SetVertexColor(TAB_TINT_PUSHED[1], TAB_TINT_PUSHED[2], TAB_TINT_PUSHED[3], 1) end
+        local ht = btn.GetHighlightTexture and btn:GetHighlightTexture()
+        if ht then ht:SetVertexColor(TAB_TINT_HIGHLIGHT[1], TAB_TINT_HIGHLIGHT[2], TAB_TINT_HIGHLIGHT[3], 0.55) end
+    end
+
     for i, def in ipairs(tabDefs) do
         local btn = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
         btn:SetHeight(TAB_H)
@@ -2323,6 +2065,7 @@ local function EAL_BuildGUI()
         btn:SetPoint("TOPLEFT", tabX, TAB_Y)
         tabX = tabX + btnW + 2
         btn:SetScript("OnClick", function() ShowTab(i) end)
+        TintTab(btn)
         tabBtns[i] = btn
     end
 
@@ -2437,25 +2180,11 @@ local function EAL_BuildGUI()
             "|cffaaaaaa(repair vendors, quest vendors, etc).|r",
         })
 
-    -- Sell preview (per-character)
-    MakeCheckbox(pGeneral, "|cffffd700Show preview|r before each sell cycle", 18, -214,
-        function() return EAL_CDB and EAL_CDB.sellPreview end,
-        function(v) EAL_CDB.sellPreview = v end,
-        {
-            "|cffffd700Sell preview|r |cffaaaaaa(this character)|r",
-            "|cffaaaaaaWhen ON, every sell cycle pauses after repair|r",
-            "|cffaaaaaaand shows a window listing each item that|r",
-            "|cffaaaaaawould be sold.  Uncheck rows to skip them;|r",
-            "|cffaaaaaaclick Sell to proceed or Cancel to abort.|r",
-            " ",
-            "|cffaaaaaaSafer for high-value bags; slower workflow.|r",
-        })
-
     -- ---- Sell-price max (input field in gold) ----------------------
     local sellPriceLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    sellPriceLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -250)
+    sellPriceLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -222)
     sellPriceLbl:SetText("Skip sell if item is worth more than")
-    local sellPriceInput = MakeNumericInput(pGeneral, 252, -248, 48, 6)
+    local sellPriceInput = MakeNumericInput(pGeneral, 252, -220, 48, 6)
     sellPriceInput:SetText(tostring(math.floor((EAL_DB.sellPriceMax or 0) / 10000)))
     local sellPriceUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     sellPriceUnit:SetPoint("LEFT", sellPriceInput.container, "RIGHT", 6, 0)
@@ -2491,9 +2220,9 @@ local function EAL_BuildGUI()
 
     -- ---- Repair cost cap (input field in gold) ---------------------
     local repairLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    repairLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -274)
+    repairLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -246)
     repairLbl:SetText("Skip auto-repair if cost is over")
-    local repairInput = MakeNumericInput(pGeneral, 252, -272, 48, 6)
+    local repairInput = MakeNumericInput(pGeneral, 252, -244, 48, 6)
     repairInput:SetText(tostring(math.floor((EAL_DB.repairCostCap or 0) / 10000)))
     local repairUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     repairUnit:SetPoint("LEFT", repairInput.container, "RIGHT", 6, 0)
@@ -2528,9 +2257,9 @@ local function EAL_BuildGUI()
     repairInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- Vendor-button hint + show/hide toggle (shifted down to make room)
-    MakeDivider(pGeneral, -302)
+    MakeDivider(pGeneral, -274)
     local vendorHint = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    vendorHint:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -314)
+    vendorHint:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -286)
     vendorHint:SetWidth(220); vendorHint:SetJustifyH("LEFT")
     vendorHint:SetText("|cffaaaaaaClick vendor button, then Interact key to sell|r")
 
@@ -2539,7 +2268,7 @@ local function EAL_BuildGUI()
         else                          btn:SetText(L["Show Vendor Btn"]) end
     end
     local vendorToggle = CreateFrame("Button", nil, pGeneral, "GameMenuButtonTemplate")
-    vendorToggle:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 242, -310)
+    vendorToggle:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 242, -282)
     vendorToggle:SetWidth(100); vendorToggle:SetHeight(22)
     UpdateVendorToggleBtn(vendorToggle)
     vendorToggle:SetScript("OnClick", function(self)
@@ -2552,7 +2281,7 @@ local function EAL_BuildGUI()
     g_vendorBtnToggle = vendorToggle
 
     -- Minimap button toggle
-    MakeCheckbox(pGeneral, "Show minimap button", 18, -346,
+    MakeCheckbox(pGeneral, "Show minimap button", 18, -318,
         function() return EAL_DB.showMinimapButton end,
         function(v)
             EAL_DB.showMinimapButton = v
@@ -2579,7 +2308,7 @@ local function EAL_BuildGUI()
     local function PanelEdge(parent, tlx, tly, brx, bry)
         local e = parent:CreateTexture(nil, "ARTWORK", nil, 1)
         e:SetTexture("Interface\\Buttons\\WHITE8X8")
-        e:SetVertexColor(0.55, 0.42, 0.18, 0.85)
+        e:SetVertexColor(0.55, 0.40, 0.75, 0.85)   -- v4.9.0 violet hairline
         e:SetPoint("TOPLEFT",     parent, "TOPLEFT", tlx, tly)
         e:SetPoint("BOTTOMRIGHT", parent, "TOPLEFT", brx, bry)
     end
@@ -2908,7 +2637,7 @@ local function EAL_BuildGUI()
     trackTex:SetAllPoints(); trackTex:SetTexture(0.08, 0.08, 0.08, 0.9)
     local thumb = track:CreateTexture(nil, "ARTWORK")
     thumb:SetWidth(TRACK_W - 2); thumb:SetPoint("TOP", track, "TOP", 0, 0)
-    thumb:SetTexture(0.55, 0.45, 0.25, 0.9); thumb:Hide()
+    thumb:SetTexture(0.65, 0.45, 0.90, 0.9); thumb:Hide()
     g_scrollThumb = thumb
 
     -------------------------------------------------------------------------
@@ -3090,7 +2819,7 @@ local function EAL_BuildGUI()
     sTrackTex:SetAllPoints(); sTrackTex:SetTexture(0.08, 0.08, 0.08, 0.9)
     local sThumb = sTrack:CreateTexture(nil, "ARTWORK")
     sThumb:SetWidth(6); sThumb:SetPoint("TOP", sTrack, "TOP", 0, 0)
-    sThumb:SetTexture(0.55, 0.45, 0.25, 0.9); sThumb:Hide()
+    sThumb:SetTexture(0.65, 0.45, 0.90, 0.9); sThumb:Hide()
     g_stashScrollThumb = sThumb
 
     -- ---- Guild Bank sub-section ------------------------------------------
