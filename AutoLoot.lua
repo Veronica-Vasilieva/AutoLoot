@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.4.0"
+local ADDON_VERSION = "4.4.1"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1398,9 +1398,22 @@ local function EAL_BuildGUI()
     local panels = {}
     local tabBtns = {}
 
+    -- Some templated child widgets (notably InputBoxTemplate EditBoxes)
+    -- have been observed to render across tab switches even when their
+    -- parent panel is hidden. Each panel also tracks an explicit list of
+    -- "force-toggle" widgets that get Show()/Hide() called directly on
+    -- every tab switch as a defensive measure.
+    for i = 1, #tabDefs do panels[i].forceWidgets = {} end
+
     local function ShowTab(idx)
         for i, p in ipairs(panels) do
-            if i == idx then p:Show() else p:Hide() end
+            if i == idx then
+                p:Show()
+                for _, w in ipairs(p.forceWidgets) do w:Show() end
+            else
+                p:Hide()
+                for _, w in ipairs(p.forceWidgets) do w:Hide() end
+            end
         end
         for i, b in ipairs(tabBtns) do
             if i == idx then
@@ -1534,14 +1547,15 @@ local function EAL_BuildGUI()
     sellPriceLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -222)
     sellPriceLbl:SetText("Skip sell if item is worth more than")
     local sellPriceInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
-    sellPriceInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 250, -220)
-    sellPriceInput:SetWidth(56); sellPriceInput:SetHeight(20)
+    sellPriceInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 252, -220)
+    sellPriceInput:SetWidth(48); sellPriceInput:SetHeight(20)
     sellPriceInput:SetAutoFocus(false); sellPriceInput:SetMaxLetters(6)
     sellPriceInput:SetNumeric(true); sellPriceInput:SetJustifyH("CENTER")
     sellPriceInput:SetText(tostring(math.floor((EAL_DB.sellPriceMax or 0) / 10000)))
     local sellPriceUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    sellPriceUnit:SetPoint("LEFT", sellPriceInput, "RIGHT", 4, 0)
-    sellPriceUnit:SetText("|cffffd700g|r  |cffaaaaaa(0 = off)|r")
+    sellPriceUnit:SetPoint("LEFT", sellPriceInput, "RIGHT", 6, 0)
+    sellPriceUnit:SetText("|cffffd700g|r")
+    table.insert(pGeneral.forceWidgets, sellPriceInput)
     sellPriceInput:SetScript("OnEnterPressed", function(self)
         local g = tonumber(self:GetText()) or 0
         if g < 0 then g = 0 end
@@ -1576,14 +1590,15 @@ local function EAL_BuildGUI()
     repairLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -246)
     repairLbl:SetText("Skip auto-repair if cost is over")
     local repairInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
-    repairInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 250, -244)
-    repairInput:SetWidth(56); repairInput:SetHeight(20)
+    repairInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 252, -244)
+    repairInput:SetWidth(48); repairInput:SetHeight(20)
     repairInput:SetAutoFocus(false); repairInput:SetMaxLetters(6)
     repairInput:SetNumeric(true); repairInput:SetJustifyH("CENTER")
     repairInput:SetText(tostring(math.floor((EAL_DB.repairCostCap or 0) / 10000)))
     local repairUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    repairUnit:SetPoint("LEFT", repairInput, "RIGHT", 4, 0)
-    repairUnit:SetText("|cffffd700g|r  |cffaaaaaa(0 = off)|r")
+    repairUnit:SetPoint("LEFT", repairInput, "RIGHT", 6, 0)
+    repairUnit:SetText("|cffffd700g|r")
+    table.insert(pGeneral.forceWidgets, repairInput)
     repairInput:SetScript("OnEnterPressed", function(self)
         local g = tonumber(self:GetText()) or 0
         if g < 0 then g = 0 end

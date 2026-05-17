@@ -1,5 +1,11 @@
 # Changelog — AutoLoot
 
+## [4.4.1] - 2026-04-24
+
+### Fixed
+- **General-tab input fields bled through to other tabs.** The two new `InputBoxTemplate` fields ("Skip sell if item is worth more than" and "Skip auto-repair if cost is over") were rendering across all four tabs even though they were correctly parented to the General-tab panel. Each tab panel now keeps an explicit `forceWidgets` list, and `ShowTab` calls `Show()` / `Hide()` directly on every entry as a belt-and-suspenders measure on top of normal parent-visibility inheritance.
+- **Unit-label text overflowed the window border.** The trailing `g (0 = off)` overflowed past the right inset on both rows. Trimmed to just `g` (the `0 = off` semantics moved into the input's tooltip), and shrunk the input fields slightly so everything sits inside the panel.
+
 ## [4.4.0] - 2026-04-24
 
 First user-feature release on top of the v4.3.0 tab/L10n foundation.
