@@ -1,5 +1,16 @@
 # Changelog — AutoLoot
 
+## [4.7.1] - 2026-05-17
+
+### Fixed
+- **Guild bank consolidation didn't actually merge stacks.** v4.7.0's consolidation routine would pick up a source stack with `PickupGuildBankItem(tab, src)` and then 0.15 s later call `PickupGuildBankItem(tab, dst)` to drop it — but `PickupGuildBankItem` requires a server roundtrip and locks the source slot until the server confirms. The follow-up drop was firing while the source was still locked, the server rejected the move, and the cursor item ended up dangling (visible behavior: "item picked up but doesn't merge"). Fixed by:
+  - Switching the source pickup to **`SplitGuildBankItem(tab, slot, amount)`** so we pick up *exactly* the count that fits in the destination — no leftover handling needed.
+  - Increasing the **pickup → drop delay** from 0.15 s to **0.6 s**, which comfortably exceeds the typical 200–400 ms 3.3.5a server roundtrip.
+  - Increasing the **post-drop settle delay** to 0.6 s before iterating.
+  - Adding an **attempted-pair dedup** (`"src:dst"` set). A silently-failing move can no longer be re-picked next iteration, so the loop converges on either success or an "out of new merges" exit instead of spinning.
+  - Reading the **per-tab withdrawal counter** up front; if it's `0` the user gets a clear "moves will be rejected" warning before any cursor activity starts.
+- **Cleaned up the dead `EAL_FindNextGBMerge` helper** that v4.7.0 referenced; the rescan loop now lives inline in `EAL_ConsolidateGuildBankCurrentTab`.
+
 ## [4.7.0] - 2026-05-17
 
 ### Added — Guild Bank consolidation

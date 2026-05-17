@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.7.0"
+local ADDON_VERSION = "4.7.1"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1098,41 +1098,6 @@ end
 local GBANK_NUM_SLOTS = 98
 local g_consolidatingGB = false
 
--- Walks the current tab and returns (srcSlot, dstSlot) for the best merge
--- to perform, or nil if no merges are possible.  "Best" = smallest count
--- merging into largest count with room, picked among items that have
--- multiple partial stacks.
-local function EAL_FindNextGBMerge(tab)
-    local partials = {}    -- itemID -> { {slot, count, stackMax}, ... }
-    for slot = 1, GBANK_NUM_SLOTS do
-        local link = GetGuildBankItemLink(tab, slot)
-        if link then
-            local _, count = GetGuildBankItemInfo(tab, slot)
-            local _, _, _, _, _, _, _, stackMax = GetItemInfo(link)
-            if count and stackMax and stackMax > 1 and count < stackMax then
-                local itemID = link:match("item:(%d+)")
-                if itemID then
-                    partials[itemID] = partials[itemID] or {}
-                    table.insert(partials[itemID], {
-                        slot = slot, count = count, stackMax = stackMax,
-                    })
-                end
-            end
-        end
-    end
-
-    for _, list in pairs(partials) do
-        if #list >= 2 then
-            table.sort(list, function(a, b) return a.count < b.count end)
-            -- Smallest source, largest target with room.  Since all
-            -- entries are partial (count < stackMax), the target always
-            -- has room.
-            return list[1].slot, list[#list].slot
-        end
-    end
-    return nil, nil
-end
-
 local function EAL_ConsolidateGuildBankCurrentTab()
     if g_consolidatingGB then return end
 
@@ -1147,9 +1112,9 @@ local function EAL_ConsolidateGuildBankCurrentTab()
         return
     end
 
-    -- Permission check.  Different cores expose slightly different return
-    -- arity; canView and canDeposit are the universally-present pair.
-    local canView, canDeposit = GetGuildBankTabPermissions(tab)
+    -- Permission check.  canView + canDeposit on the tab.  numWithdrawals
+    -- (4th return) is the per-day counter; 0 means "out for the day".
+    local canView, canDeposit, _, numWithdrawals = GetGuildBankTabPermissions(tab)
     if not canView then
         Print("|cffff4444No permission to view tab " .. tab .. ".|r")
         return
@@ -1159,10 +1124,20 @@ local function EAL_ConsolidateGuildBankCurrentTab()
               ".|r  Consolidation needs both view and deposit.")
         return
     end
+    if numWithdrawals == 0 then
+        Print("|cffff9900Tab " .. tab .. ": 0 daily withdrawals remaining.|r " ..
+              "Moves will be rejected by the server.")
+        -- We still run -- a guild master with unlimited slots is reported as
+        -- some sentinel value (e.g. -1 or a huge number), so 0 is the only
+        -- safe "definitely blocked" reading.
+    end
 
     g_consolidatingGB = true
     local moves, capped = 0, false
-    -- Safety cap: if something goes wrong we don't want to loop forever.
+    -- "src:dst" pairs we have already tried.  Prevents an infinite loop when
+    -- a move silently fails (e.g. server rate limit, latency spike, expired
+    -- withdraw) and the same pair would otherwise be picked again next pass.
+    local attempts = {}
     local MAX_MOVES = 60
 
     local function DoNext()
@@ -1179,39 +1154,84 @@ local function EAL_ConsolidateGuildBankCurrentTab()
             return
         end
 
-        local src, dst = EAL_FindNextGBMerge(tab)
-        if not src then
+        -- Rescan and pick the next merge, skipping pairs we've already tried.
+        local partials = {}
+        for slot = 1, GBANK_NUM_SLOTS do
+            local link = GetGuildBankItemLink(tab, slot)
+            if link then
+                local _, count = GetGuildBankItemInfo(tab, slot)
+                local _, _, _, _, _, _, _, stackMax = GetItemInfo(link)
+                if count and stackMax and stackMax > 1 and count < stackMax then
+                    local itemID = link:match("item:(%d+)")
+                    if itemID then
+                        partials[itemID] = partials[itemID] or {}
+                        table.insert(partials[itemID], {
+                            slot = slot, count = count, stackMax = stackMax,
+                        })
+                    end
+                end
+            end
+        end
+
+        local srcSlot, dstSlot, amount
+        for _, list in pairs(partials) do
+            if #list >= 2 then
+                table.sort(list, function(a, b) return a.count < b.count end)
+                local s, d = list[1], list[#list]
+                local key = s.slot .. ":" .. d.slot
+                if not attempts[key] then
+                    srcSlot = s.slot
+                    dstSlot = d.slot
+                    amount  = math.min(s.count, d.stackMax - d.count)
+                    attempts[key] = true
+                    break
+                end
+            end
+        end
+
+        if not srcSlot then
             g_consolidatingGB = false
             if moves > 0 then
                 Print("Guild bank tab " .. tab .. ": consolidation complete (" ..
                       moves .. " move(s)).")
             else
-                Print("Guild bank tab " .. tab .. ": nothing to consolidate.")
+                Print("Guild bank tab " .. tab ..
+                      ": nothing left to consolidate.")
             end
             return
         end
 
-        -- 1) Pick up source stack
+        -- Step 1: Split off exactly `amount` items from source onto cursor.
+        -- SplitGuildBankItem is the clean primitive here -- no leftover to
+        -- handle because we only pick up what fits in dst.  PickupGuildBank
+        -- whole-stack works too if Split isn't available, but it leaks a
+        -- leftover whenever source > dst-room.
         ClearCursor()
-        PickupGuildBankItem(tab, src)
+        if SplitGuildBankItem then
+            SplitGuildBankItem(tab, srcSlot, amount)
+        else
+            PickupGuildBankItem(tab, srcSlot)
+        end
 
-        After(0.15, function()
-            if not CursorHasItem() then
-                -- Could not pick up (withdrawal limit, locked, etc.)
+        -- Step 2: After server roundtrip (typical 200-400ms in 3.3.5a),
+        -- drop on destination.  0.6s is conservative but reliable.
+        After(0.6, function()
+            if not GuildBankFrame or not GuildBankFrame:IsShown() then
+                ClearCursor()
                 g_consolidatingGB = false
-                Print("|cffff9900Guild bank: couldn't pick up slot " .. src ..
-                      ".|r  Out of daily withdrawals?  Moves so far: " .. moves)
+                Print("Guild bank closed mid-move. Moves: " .. moves)
                 return
             end
+            PickupGuildBankItem(tab, dstSlot)
 
-            -- 2) Drop on target (auto-merges)
-            PickupGuildBankItem(tab, dst)
-
-            After(0.45, function()
-                -- 3) If anything left on cursor, put back at source
+            -- Step 3: Settle, then iterate.
+            After(0.6, function()
+                -- Defensive: if anything is still on the cursor (e.g. dst
+                -- was different item and a swap happened that we don't
+                -- want), drop it back at the source slot.
                 if CursorHasItem() then
-                    PickupGuildBankItem(tab, src)
-                    After(0.2, function()
+                    PickupGuildBankItem(tab, srcSlot)
+                    After(0.4, function()
                         ClearCursor()
                         moves = moves + 1
                         if moves >= MAX_MOVES then capped = true end
