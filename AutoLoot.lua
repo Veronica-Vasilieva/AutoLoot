@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.6.0"
+local ADDON_VERSION = "4.6.1"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1748,9 +1748,17 @@ local function EAL_BuildGUI()
         GameTooltip:AddLine("|cff888866" .. L["by"] .. " " .. ADDON_AUTHOR .. "|r")
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("|cffffd700" .. L["Slash commands"] .. ":|r")
-        GameTooltip:AddLine("|cffaaaaaa/eal  /autoloot|r")
-        GameTooltip:AddLine("|cffaaaaaa/eal toggle | sell | ilvlsell|r")
-        GameTooltip:AddLine("|cffaaaaaa/eal reset | minimap | help|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal|r |cff888866 or |r|cffaaaaaa/autoloot|r   |cff666666open/close|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal toggle|r   |cff666666enable/disable cycle|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal enable|r |cff888866| |r|cffaaaaaa/eal disable|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal sell|r   |cff666666force a sell cycle now|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal ilvlsell|r   |cff666666sell low-iLvl gear|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal deposit|r   |cff666666bank: deposit stash|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal mail|r   |cff666666mailbox: collect|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal cleanmail|r   |cff666666delete read empty|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal reset|r   |cff666666clear whitelist|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal minimap|r   |cff666666show/hide button|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal help|r   |cff666666chat command list|r")
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("|cffffd700" .. L["License"] .. ":|r")
         GameTooltip:AddLine("|cffaaaaaa" .. L["Source-available. Attribution required. See LICENSE for full terms."] .. "|r", 1, 1, 1, true)
@@ -2762,10 +2770,18 @@ local function EAL_RegisterOptionsPanel()
     cmdInfo:SetJustifyH("LEFT")
     cmdInfo:SetText(
         "|cffffd700Slash commands:|r\n" ..
-        "  /eal  or  /autoloot  - open settings\n" ..
-        "  /eal toggle          - enable/disable\n" ..
-        "  /eal sell            - force a sell cycle now\n" ..
-        "  /eal reset           - clear whitelist (confirmation)\n" ..
+        "  /eal  or  /autoloot   - open / close the settings window\n" ..
+        "  /eal toggle           - enable / disable the loot+sell cycle\n" ..
+        "  /eal enable           - explicit enable\n" ..
+        "  /eal disable          - explicit disable\n" ..
+        "  /eal sell             - force a sell cycle right now\n" ..
+        "  /eal ilvlsell         - quick-sell low-iLvl gear (confirmation)\n" ..
+        "  /eal deposit          - bank: deposit stash items\n" ..
+        "  /eal mail             - mailbox: collect attachments + money\n" ..
+        "  /eal cleanmail        - delete read empty mail\n" ..
+        "  /eal reset            - clear whitelist (confirmation)\n" ..
+        "  /eal minimap          - show / hide the minimap button\n" ..
+        "  /eal help             - print the command list in chat\n" ..
         "\n" ..
         "|cffffd700Keybindings:|r bind in Escape -> Key Bindings -> AutoLoot."
     )

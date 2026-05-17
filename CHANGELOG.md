@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.6.1] - 2026-05-17
+
+### Changed
+- **Info-panel slash-command list updated.** The two information surfaces — the `?` badge tooltip in the top-right of the settings window and the Blizzard Interface Options panel — both still listed only the original v3.x commands (`toggle / sell / reset`). They now include every command shipped through v4.6.0: `ilvlsell`, `deposit`, `mail`, `cleanmail`, plus the explicit `enable` / `disable` aliases. Each command has a short inline description so users don't have to leave the settings window to remember what does what.
+
 ## [4.6.0] - 2026-05-17
 
 ### Added — new Mail tab
