@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.6.1"
+local ADDON_VERSION = "4.7.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1075,6 +1075,162 @@ local function EAL_DepositStashItems(force)
 end
 
 -------------------------------------------------------------------------------
+-- Guild bank stack consolidation
+--
+-- Operates on the currently-displayed guild bank tab. Scans all 98 slots
+-- (7 columns x 14 rows) for partial stacks of the same item, then greedily
+-- merges the smallest source into the largest target with room.  After each
+-- move it re-scans state and re-picks the next pair, so it converges no
+-- matter what the user does mid-cycle.
+--
+-- Permission model: requires canView + canDeposit on the tab.  Withdrawals
+-- within a tab count against the daily withdrawal counter on most cores,
+-- so trial members with 0 remaining will see "cursor empty after pickup"
+-- and the loop terminates cleanly.
+--
+-- Move primitive (within one tab):
+--   1. PickupGuildBankItem(tab, src)       -- whole stack to cursor
+--   2. PickupGuildBankItem(tab, dst)       -- merges; leftover stays on cursor
+--   3. if cursor still has items, PickupGuildBankItem(tab, src) to put back
+--
+-- Throttled at ~0.6s per move to stay under server rate limits.
+-------------------------------------------------------------------------------
+local GBANK_NUM_SLOTS = 98
+local g_consolidatingGB = false
+
+-- Walks the current tab and returns (srcSlot, dstSlot) for the best merge
+-- to perform, or nil if no merges are possible.  "Best" = smallest count
+-- merging into largest count with room, picked among items that have
+-- multiple partial stacks.
+local function EAL_FindNextGBMerge(tab)
+    local partials = {}    -- itemID -> { {slot, count, stackMax}, ... }
+    for slot = 1, GBANK_NUM_SLOTS do
+        local link = GetGuildBankItemLink(tab, slot)
+        if link then
+            local _, count = GetGuildBankItemInfo(tab, slot)
+            local _, _, _, _, _, _, _, stackMax = GetItemInfo(link)
+            if count and stackMax and stackMax > 1 and count < stackMax then
+                local itemID = link:match("item:(%d+)")
+                if itemID then
+                    partials[itemID] = partials[itemID] or {}
+                    table.insert(partials[itemID], {
+                        slot = slot, count = count, stackMax = stackMax,
+                    })
+                end
+            end
+        end
+    end
+
+    for _, list in pairs(partials) do
+        if #list >= 2 then
+            table.sort(list, function(a, b) return a.count < b.count end)
+            -- Smallest source, largest target with room.  Since all
+            -- entries are partial (count < stackMax), the target always
+            -- has room.
+            return list[1].slot, list[#list].slot
+        end
+    end
+    return nil, nil
+end
+
+local function EAL_ConsolidateGuildBankCurrentTab()
+    if g_consolidatingGB then return end
+
+    if not GuildBankFrame or not GuildBankFrame:IsShown() then
+        Print("|cffff4444Guild bank not open.|r Open it first.")
+        return
+    end
+
+    local tab = GetCurrentGuildBankTab and GetCurrentGuildBankTab()
+    if not tab or tab == 0 then
+        Print("|cffff4444No guild bank tab selected.|r Click an item tab first.")
+        return
+    end
+
+    -- Permission check.  Different cores expose slightly different return
+    -- arity; canView and canDeposit are the universally-present pair.
+    local canView, canDeposit = GetGuildBankTabPermissions(tab)
+    if not canView then
+        Print("|cffff4444No permission to view tab " .. tab .. ".|r")
+        return
+    end
+    if not canDeposit then
+        Print("|cffff4444No permission to deposit/rearrange tab " .. tab ..
+              ".|r  Consolidation needs both view and deposit.")
+        return
+    end
+
+    g_consolidatingGB = true
+    local moves, capped = 0, false
+    -- Safety cap: if something goes wrong we don't want to loop forever.
+    local MAX_MOVES = 60
+
+    local function DoNext()
+        if capped then
+            g_consolidatingGB = false
+            Print("Guild bank consolidation hit the " .. MAX_MOVES ..
+                  "-move safety cap.  Re-run to continue.")
+            return
+        end
+
+        if not GuildBankFrame or not GuildBankFrame:IsShown() then
+            g_consolidatingGB = false
+            Print("Guild bank closed mid-consolidation. Moves so far: " .. moves)
+            return
+        end
+
+        local src, dst = EAL_FindNextGBMerge(tab)
+        if not src then
+            g_consolidatingGB = false
+            if moves > 0 then
+                Print("Guild bank tab " .. tab .. ": consolidation complete (" ..
+                      moves .. " move(s)).")
+            else
+                Print("Guild bank tab " .. tab .. ": nothing to consolidate.")
+            end
+            return
+        end
+
+        -- 1) Pick up source stack
+        ClearCursor()
+        PickupGuildBankItem(tab, src)
+
+        After(0.15, function()
+            if not CursorHasItem() then
+                -- Could not pick up (withdrawal limit, locked, etc.)
+                g_consolidatingGB = false
+                Print("|cffff9900Guild bank: couldn't pick up slot " .. src ..
+                      ".|r  Out of daily withdrawals?  Moves so far: " .. moves)
+                return
+            end
+
+            -- 2) Drop on target (auto-merges)
+            PickupGuildBankItem(tab, dst)
+
+            After(0.45, function()
+                -- 3) If anything left on cursor, put back at source
+                if CursorHasItem() then
+                    PickupGuildBankItem(tab, src)
+                    After(0.2, function()
+                        ClearCursor()
+                        moves = moves + 1
+                        if moves >= MAX_MOVES then capped = true end
+                        DoNext()
+                    end)
+                else
+                    moves = moves + 1
+                    if moves >= MAX_MOVES then capped = true end
+                    DoNext()
+                end
+            end)
+        end)
+    end
+
+    Print("Guild bank tab " .. tab .. ": consolidating partial stacks...")
+    DoNext()
+end
+
+-------------------------------------------------------------------------------
 -- Mail auto-collect + auto-clean
 --
 -- Fires on MAIL_SHOW when EAL_CDB.mailAutoCollect is on. Walks every mail in
@@ -1756,6 +1912,7 @@ local function EAL_BuildGUI()
         GameTooltip:AddLine("|cffaaaaaa/eal deposit|r   |cff666666bank: deposit stash|r")
         GameTooltip:AddLine("|cffaaaaaa/eal mail|r   |cff666666mailbox: collect|r")
         GameTooltip:AddLine("|cffaaaaaa/eal cleanmail|r   |cff666666delete read empty|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal gbconsolidate|r |cff888866| |r|cffaaaaaa/eal gbc|r   |cff666666guild bank|r")
         GameTooltip:AddLine("|cffaaaaaa/eal reset|r   |cff666666clear whitelist|r")
         GameTooltip:AddLine("|cffaaaaaa/eal minimap|r   |cff666666show/hide button|r")
         GameTooltip:AddLine("|cffaaaaaa/eal help|r   |cff666666chat command list|r")
@@ -2615,6 +2772,35 @@ local function EAL_BuildGUI()
     sThumb:SetTexture(0.55, 0.45, 0.25, 0.9); sThumb:Hide()
     g_stashScrollThumb = sThumb
 
+    -- ---- Guild Bank sub-section ------------------------------------------
+    MakeDivider(pBank, -490)
+    MakeHeader(pBank, L["GUILD BANK"], 18, -500)
+
+    local gbConsolidateBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    gbConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -518)
+    gbConsolidateBtn:SetWidth(184); gbConsolidateBtn:SetHeight(22)
+    gbConsolidateBtn:SetText("Consolidate Stacks")
+    gbConsolidateBtn:SetScript("OnClick", function()
+        EAL_ConsolidateGuildBankCurrentTab()
+    end)
+    MakeTooltipButton(gbConsolidateBtn, "|cffffd700Consolidate Stacks|r", {
+        "|cffaaaaaaMerges partial stacks of the same item in|r",
+        "|cffaaaaaathe currently-displayed guild bank tab.|r",
+        " ",
+        "|cffaaaaaaRequires |cffffff00view + deposit|r |cffaaaaaapermission on the|r",
+        "|cffaaaaaatab.  Movements count against your daily|r",
+        "|cffaaaaaawithdrawal limit on most servers.|r",
+        " ",
+        "|cffff9900Open the guild bank first.|r  Also bound to",
+        "|cffffff00/eal gbconsolidate|r |cffaaaaaa(alias |r|cffffff00/eal gbc|r|cffaaaaaa).|r",
+    })
+
+    local gbHint = pBank:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    gbHint:SetPoint("LEFT", gbConsolidateBtn, "RIGHT", 8, 0)
+    gbHint:SetPoint("RIGHT", pBank, "RIGHT", -14, 0)
+    gbHint:SetJustifyH("LEFT")
+    gbHint:SetText("|cffaaaaaaOperates on the current GB tab.|r")
+
     -------------------------------------------------------------------------
     -- Tab 5: MAIL
     -- Per-character auto-collect on MAIL_SHOW with sub-toggles for money
@@ -2779,6 +2965,7 @@ local function EAL_RegisterOptionsPanel()
         "  /eal deposit          - bank: deposit stash items\n" ..
         "  /eal mail             - mailbox: collect attachments + money\n" ..
         "  /eal cleanmail        - delete read empty mail\n" ..
+        "  /eal gbconsolidate    - guild bank: consolidate stacks (current tab)\n" ..
         "  /eal reset            - clear whitelist (confirmation)\n" ..
         "  /eal minimap          - show / hide the minimap button\n" ..
         "  /eal help             - print the command list in chat\n" ..
@@ -2967,12 +3154,14 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         EAL_AutoCollectMail(true)
     elseif cmd == "cleanmail" then
         EAL_CleanReadMail()
+    elseif cmd == "gbconsolidate" or cmd == "gbc" then
+        EAL_ConsolidateGuildBankCurrentTab()
     elseif cmd == "minimap" then
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | gbconsolidate | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()

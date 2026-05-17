@@ -1,5 +1,17 @@
 # Changelog — AutoLoot
 
+## [4.7.0] - 2026-05-17
+
+### Added — Guild Bank consolidation
+- **New "GUILD BANK" sub-section on the Bank tab** with a `Consolidate Stacks` button. One-click merges every partial stack of the same item in the **currently-displayed guild bank tab** into the smallest number of stacks possible. Slash: `/eal gbconsolidate` (alias `/eal gbc`).
+- **Permission detection.** Reads `GetGuildBankTabPermissions(tab)` before any move. Refuses with a clear chat message if the tab lacks **view** or **deposit** permission. Withdrawal-counter limits are detected mid-cycle (cursor empty after pickup → loop terminates and reports moves-so-far).
+- **Convergent re-scan loop.** Instead of pre-computing a move list, the consolidator rescans tab state after every move and picks the next best merge (smallest source into largest target with room). This means it self-corrects against partial failures and tolerates the guild bank inventory shifting mid-cycle.
+- **Throttled.** ~0.6s between each pickup/drop pair to stay under server rate limits. Hard safety cap of 60 moves per run; re-run to continue beyond that.
+
+### Notes
+- v4.7.0 focuses on the highest-value GB feature (consolidation). Audit-log viewing and per-tab auto-deposit rules are queued for v4.7.x / v4.8.0.
+- No schema bump, no new SavedVariables fields.
+
 ## [4.6.1] - 2026-05-17
 
 ### Changed

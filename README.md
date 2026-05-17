@@ -77,6 +77,7 @@ If your server uses different names (or a different language), open the AutoLoot
 | `/eal deposit` (alias `/eal stash`) | Force a stash-list deposit cycle at the open bank window |
 | `/eal mail` (alias `/eal collect`) | Force a mail collect pass on the open mailbox |
 | `/eal cleanmail` | Delete read empty mail from the open mailbox |
+| `/eal gbconsolidate` (alias `/eal gbc`) | Merge partial stacks in the current guild bank tab |
 | `/eal reset` | Clear whitelist (confirmation required) |
 | `/eal minimap` | Show/hide the minimap button |
 | `/eal help` | Print the command list |
