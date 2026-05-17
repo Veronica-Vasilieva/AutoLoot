@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.4.4"
+local ADDON_VERSION = "4.5.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -126,6 +126,12 @@ local DEFAULTS = {
     -- Whitelist scope (union of account + per-character is used at runtime)
     blacklist        = {},        -- account-wide whitelist (name misnomer kept for back-compat)
 
+    -- Stash list (Bank tab). Items whose names match are auto-deposited
+    -- from bags into the bank when the bank window opens, if the
+    -- per-character autoDepositToBank toggle is also on. Account-wide
+    -- entries are stored here; per-character entries live in CHAR_DEFAULTS.
+    stashList        = {},
+
     -- Money tracking (lifetime)
     goldEarned       = 0,
     itemsSold        = 0,
@@ -144,8 +150,10 @@ local DEFAULTS = {
 }
 
 local CHAR_DEFAULTS = {
-    schemaVersion = CURRENT_SCHEMA,
-    blacklist     = {},           -- per-character whitelist
+    schemaVersion       = CURRENT_SCHEMA,
+    blacklist           = {},     -- per-character whitelist
+    stashList           = {},     -- per-character stash list (Bank tab)
+    autoDepositToBank   = false,  -- auto-deposit stash items when bank opens
 }
 
 -------------------------------------------------------------------------------
@@ -167,6 +175,7 @@ local sellSessionActive     = false
 -- Forward declarations (required — some functions reference each other
 -- across the file and Lua's `local function` doesn't hoist)
 local EAL_RefreshBlacklist
+local EAL_RefreshStashList
 local EAL_UpdateStatus
 local EAL_UpdateMinimapTooltip
 local UpdateMinimapButton
@@ -183,6 +192,11 @@ local g_autoDelCb
 local g_blacklistRows    = {}
 local g_blacklistOffset  = 0
 local g_scrollThumb
+-- Bank tab (parallel scroll list)
+local g_stashRows        = {}
+local g_stashOffset      = 0
+local g_stashScrollThumb
+local g_autoDepositCb              -- bank auto-deposit master checkbox
 local ROW_HEIGHT = 22
 local MAX_ROWS   = 8
 
@@ -259,6 +273,24 @@ local function IsBlacklisted(itemName)
     end
     if EAL_CDB and EAL_CDB.blacklist then
         for _, entry in ipairs(EAL_CDB.blacklist) do
+            if entry:lower() == lower then return true end
+        end
+    end
+    return false
+end
+
+-- True when the item is listed in either the account-wide or per-character
+-- stash list (Bank tab). Used by EAL_DepositStashItems on BANKFRAME_OPENED.
+local function IsInStashList(itemName)
+    if not itemName then return false end
+    local lower = itemName:lower()
+    if EAL_DB and EAL_DB.stashList then
+        for _, entry in ipairs(EAL_DB.stashList) do
+            if entry:lower() == lower then return true end
+        end
+    end
+    if EAL_CDB and EAL_CDB.stashList then
+        for _, entry in ipairs(EAL_CDB.stashList) do
             if entry:lower() == lower then return true end
         end
     end
@@ -430,6 +462,67 @@ EAL_UpdateStatus = function()
     end
 
     if UpdateMinimapButton then UpdateMinimapButton() end
+end
+
+EAL_RefreshStashList = function()
+    if not EAL_DB then return end
+
+    -- Merged view: account entries first, then per-char.
+    local merged = {}
+    for _, v in ipairs(EAL_DB.stashList or {}) do
+        table.insert(merged, { scope = "account", name = v })
+    end
+    if EAL_CDB and EAL_CDB.stashList then
+        for _, v in ipairs(EAL_CDB.stashList) do
+            table.insert(merged, { scope = "char", name = v })
+        end
+    end
+
+    local total = #merged
+    g_stashOffset = math.max(0, math.min(g_stashOffset,
+                                          math.max(0, total - MAX_ROWS)))
+
+    for i = 1, MAX_ROWS do
+        local row = g_stashRows[i]
+        if row then
+            local idx = g_stashOffset + i
+            if idx <= total then
+                local entry = merged[idx]
+                local prefix = (entry.scope == "char")
+                                  and "|cff87ceeb[C]|r " or "|cffb9b9b9[A]|r "
+                row.label:SetText(prefix .. entry.name)
+                local capturedEntry = entry
+                row.removeBtn:SetScript("OnClick", function()
+                    local list = (capturedEntry.scope == "char")
+                                    and EAL_CDB.stashList
+                                    or  EAL_DB.stashList
+                    for j = #list, 1, -1 do
+                        if list[j]:lower() == capturedEntry.name:lower() then
+                            table.remove(list, j); break
+                        end
+                    end
+                    EAL_RefreshStashList()
+                end)
+                row:Show()
+            else
+                row:Hide()
+            end
+        end
+    end
+
+    if g_stashScrollThumb then
+        local trackH = MAX_ROWS * ROW_HEIGHT
+        if total <= MAX_ROWS then
+            g_stashScrollThumb:Hide()
+        else
+            local thumbH = math.max(16, trackH * MAX_ROWS / total)
+            local maxOff = total - MAX_ROWS
+            local thumbY = -(g_stashOffset / maxOff) * (trackH - thumbH)
+            g_stashScrollThumb:SetHeight(thumbH)
+            g_stashScrollThumb:SetPoint("TOP", 0, thumbY)
+            g_stashScrollThumb:Show()
+        end
+    end
 end
 
 EAL_RefreshBlacklist = function()
@@ -899,6 +992,143 @@ local function EAL_DeleteUnsellableItems()
 end
 
 -------------------------------------------------------------------------------
+-- Bank auto-deposit
+--
+-- Fires on BANKFRAME_OPENED when the per-character autoDepositToBank toggle
+-- is on. Scans bags for items whose names match the stash list (union of
+-- account + per-character entries) and moves them into the first available
+-- bank slot, one at a time with a small delay between moves to avoid
+-- flooding the protected-action queue.
+--
+-- Bank slot inventory in 3.3.5a:
+--   bag -1     : main bank (28 slots)
+--   bags 5..11 : the 7 bank-bag slots (variable slot count per bag)
+-- Player bags 0..4 are the source, not the destination.
+-------------------------------------------------------------------------------
+local BANK_BAGS = { -1, 5, 6, 7, 8, 9, 10, 11 }
+local g_depositingToBank = false
+
+-- Walk bank slots for an existing partial stack we can merge into; fall back
+-- to the first empty slot. Returns (bag, slot) or nil if the bank is full.
+local function EAL_FindBankSlotFor(itemName, count)
+    -- Pass 1: existing partial stack
+    if itemName then
+        for _, bag in ipairs(BANK_BAGS) do
+            local numSlots = GetContainerNumSlots(bag) or 0
+            for slot = 1, numSlots do
+                local link = GetContainerItemLink(bag, slot)
+                if link then
+                    local n, _, _, _, _, _, _, stackMax = GetItemInfo(link)
+                    if n == itemName and stackMax and stackMax > 1 then
+                        local _, slotCount = GetContainerItemInfo(bag, slot)
+                        slotCount = slotCount or 1
+                        if slotCount + (count or 1) <= stackMax then
+                            return bag, slot
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- Pass 2: empty slot
+    for _, bag in ipairs(BANK_BAGS) do
+        local numSlots = GetContainerNumSlots(bag) or 0
+        for slot = 1, numSlots do
+            if not GetContainerItemLink(bag, slot) then
+                return bag, slot
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function EAL_DepositStashItems(force)
+    if g_depositingToBank then return end
+    if not BankFrame or not BankFrame:IsShown() then
+        if force then
+            Print("|cffff4444Bank not open.|r Open the bank first.")
+        end
+        return
+    end
+    if not force and not (EAL_CDB and EAL_CDB.autoDepositToBank) then
+        return    -- auto-deposit is off for this character
+    end
+
+    -- Scan bags for matching items
+    local toDeposit = {}
+    for bag = 0, 4 do
+        local numSlots = GetContainerNumSlots(bag) or 0
+        for slot = 1, numSlots do
+            local link = GetContainerItemLink(bag, slot)
+            if link then
+                local name = GetItemInfo(link)
+                if name and IsInStashList(name) then
+                    local _, count = GetContainerItemInfo(bag, slot)
+                    table.insert(toDeposit, {
+                        bag = bag, slot = slot, name = name, count = count or 1,
+                    })
+                end
+            end
+        end
+    end
+
+    if #toDeposit == 0 then
+        if force then Print("Nothing in stash list to deposit.") end
+        return
+    end
+
+    g_depositingToBank = true
+    local moved = 0
+    local startCount = #toDeposit
+
+    local function DepositNext(idx)
+        if idx > #toDeposit then
+            g_depositingToBank = false
+            if moved > 0 then
+                Print("Deposited |cffffff00" .. moved ..
+                      "|r item(s) to bank (of " .. startCount .. " in stash list).")
+            end
+            return
+        end
+
+        local item = toDeposit[idx]
+        -- Re-validate the slot since bags may have shifted between scan and move
+        local link = GetContainerItemLink(item.bag, item.slot)
+        if not link then
+            DepositNext(idx + 1); return
+        end
+        local n = GetItemInfo(link)
+        if n ~= item.name then
+            DepositNext(idx + 1); return
+        end
+
+        local bankBag, bankSlot = EAL_FindBankSlotFor(item.name, item.count)
+        if not bankBag then
+            -- Bank full
+            g_depositingToBank = false
+            Print("|cffff4444Bank full.|r Deposited " .. moved ..
+                  " item(s) before running out of space.")
+            return
+        end
+
+        ClearCursor()
+        PickupContainerItem(item.bag, item.slot)
+        -- Confirm we actually picked it up (some items refuse to be picked up)
+        local cursorType = GetCursorInfo()
+        if cursorType ~= "item" then
+            ClearCursor()
+            DepositNext(idx + 1); return
+        end
+        PickupContainerItem(bankBag, bankSlot)
+        moved = moved + 1
+
+        After(0.05, function() DepositNext(idx + 1) end)
+    end
+
+    DepositNext(1)
+end
+
+-------------------------------------------------------------------------------
 -- Whitelist quick-add helpers (drag-drop + Ctrl+Shift+Click hook)
 --
 -- Both paths funnel through EAL_LoadIntoWhitelistInput, which writes the item
@@ -907,29 +1137,45 @@ end
 -- auto-commit, so an accidental drag still requires one click before the
 -- whitelist is mutated.
 -------------------------------------------------------------------------------
-local function EAL_LoadIntoWhitelistInput(itemName)
+-- Routes a dropped/clicked item to either the whitelist or the bank stash
+-- input, based on which tab is currently active.  If neither is active,
+-- defaults to the whitelist tab.
+local function EAL_LoadIntoListInput(itemName)
     if not itemName or itemName == "" then return false end
-    local input = _G["EAL_BlacklistInput"]
+
+    local targetTab = 4   -- default: Whitelist
+    local inputName = "EAL_BlacklistInput"
+    local listLabel = "Whitelist"
+
+    if EAL_DB and EAL_DB.lastTab == 5 then
+        targetTab = 5
+        inputName = "EAL_StashInput"
+        listLabel = "Stash"
+    end
+
+    local input = _G[inputName]
     if not input then
-        Print("|cffff4444Whitelist input not ready. Open AutoLoot first.|r")
+        Print("|cffff4444" .. listLabel ..
+              " input not ready. Open AutoLoot first.|r")
         return false
     end
     input:SetText(itemName)
-    -- Make sure the whitelist tab is visible so the user can see the input.
+
     if EAL_Window and not EAL_Window:IsShown() then EAL_Window:Show() end
-    if EAL_DB.lastTab ~= 4 and EAL_Window then
-        -- The window builder stashed a ShowTab closure on the window itself
-        -- under EAL_Window.ShowTab; fall back to setting lastTab if absent.
+    if EAL_DB.lastTab ~= targetTab and EAL_Window then
         if type(EAL_Window.ShowTab) == "function" then
-            EAL_Window.ShowTab(4)
+            EAL_Window.ShowTab(targetTab)
         else
-            EAL_DB.lastTab = 4
+            EAL_DB.lastTab = targetTab
         end
     end
-    Print("Whitelist: |cffffff00" .. itemName ..
+    Print(listLabel .. ": |cffffff00" .. itemName ..
           "|r loaded. Click |cffb9b9b9+Acct|r or |cff87ceeb+Char|r to commit.")
     return true
 end
+
+-- Back-compat alias: existing callers still use the old name.
+local EAL_LoadIntoWhitelistInput = EAL_LoadIntoListInput
 
 -- Hook HandleModifiedItemClick: Ctrl+Shift+Click an item link anywhere
 -- (bag, chat, tooltip, AH, etc.) and we load its name into the whitelist.
@@ -1019,6 +1265,22 @@ StaticPopupDialogs["AUTOLOOT_CONFIRM_RESET_WHITELIST"] = {
         if EAL_CDB then EAL_CDB.blacklist = {} end
         EAL_RefreshBlacklist()
         Print("Whitelist cleared.")
+    end,
+    timeout      = 0,
+    whileDead    = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+StaticPopupDialogs["AUTOLOOT_CONFIRM_RESET_STASH"] = {
+    text         = "Clear the entire stash list (account + current character)?",
+    button1      = "Clear",
+    button2      = "Cancel",
+    OnAccept     = function()
+        EAL_DB.stashList = {}
+        if EAL_CDB then EAL_CDB.stashList = {} end
+        if EAL_RefreshStashList then EAL_RefreshStashList() end
+        Print("Stash list cleared.")
     end,
     timeout      = 0,
     whileDead    = true,
@@ -1443,6 +1705,7 @@ local function EAL_BuildGUI()
         { key = "sell",      label = L["Sell"]      },
         { key = "actions",   label = L["Actions"]   },
         { key = "whitelist", label = L["Whitelist"] },
+        { key = "bank",      label = L["Bank"]      },
     }
 
     local panels = {}
@@ -1489,14 +1752,21 @@ local function EAL_BuildGUI()
     end
     win.ShowTab = ShowTab   -- expose for external callers (e.g. drag-drop loader)
 
-    -- Hand-roll tabs as simple buttons; OptionsFrameTabButtonTemplate
-    -- inherits a fixed bottom-anchored chevron texture that fights us here.
-    local TAB_Y, TAB_W, TAB_H = -90, 84, 22
+    -- Hand-roll tabs as simple buttons sized to each label. With 5 tabs in
+    -- a 360-wide window, fixed-width tabs would either clip "Whitelist" or
+    -- overflow the panel. Variable widths keep everything inside.
+    local TAB_Y, TAB_H, TAB_PAD = -90, 22, 12
+    local tabX = 12
     for i, def in ipairs(tabDefs) do
         local btn = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
-        btn:SetSize(TAB_W, TAB_H)
-        btn:SetPoint("TOPLEFT", 12 + (i - 1) * (TAB_W + 2), TAB_Y)
+        btn:SetHeight(TAB_H)
         btn:SetText(def.label)
+        local fs = btn:GetFontString()
+        local labelW = (fs and fs:GetStringWidth() or 50)
+        local btnW   = math.max(40, math.floor(labelW + TAB_PAD + 0.5))
+        btn:SetWidth(btnW)
+        btn:SetPoint("TOPLEFT", tabX, TAB_Y)
+        tabX = tabX + btnW + 2
         btn:SetScript("OnClick", function() ShowTab(i) end)
         tabBtns[i] = btn
     end
@@ -1532,6 +1802,7 @@ local function EAL_BuildGUI()
     local pSell      = panels[2]
     local pActions   = panels[3]
     local pWhitelist = panels[4]
+    local pBank      = panels[5]
 
     -------------------------------------------------------------------------
     -- Tab 1: GENERAL
@@ -2094,10 +2365,192 @@ local function EAL_BuildGUI()
     thumb:SetTexture(0.55, 0.45, 0.25, 0.9); thumb:Hide()
     g_scrollThumb = thumb
 
+    -------------------------------------------------------------------------
+    -- Tab 5: BANK
+    -- Auto-deposit-on-open toggle (per-character) and a stash list mirror
+    -- of the whitelist UI.  Items in the stash list (union of account +
+    -- per-character) are moved into the bank automatically when the
+    -- bank window opens (BANKFRAME_OPENED event).
+    -------------------------------------------------------------------------
+    MakeHeader(pBank, L["BANK SETTINGS"], 18, -124)
+
+    -- Master auto-deposit toggle (per-character).
+    local autoDepCb = CreateFrame("CheckButton", nil, pBank, "UICheckButtonTemplate")
+    autoDepCb:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -144)
+    autoDepCb:SetWidth(24); autoDepCb:SetHeight(24)
+    autoDepCb:SetChecked(EAL_CDB and EAL_CDB.autoDepositToBank or false)
+    local autoDepLbl = pBank:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    autoDepLbl:SetPoint("LEFT", autoDepCb, "RIGHT", 1, 0)
+    autoDepLbl:SetText("|cffffd700Auto-deposit stash items|r |cffaaaaaa(this character)|r")
+    autoDepCb:SetScript("OnClick", function(self)
+        EAL_CDB.autoDepositToBank = self:GetChecked() and true or false
+        if EAL_CDB.autoDepositToBank then
+            Print("Auto-deposit to bank: |cff44ff44ENABLED|r (this character).")
+        else
+            Print("Auto-deposit to bank: |cffaaaaaaDISABLED|r (this character).")
+        end
+    end)
+    autoDepCb:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffffd700Auto-deposit on bank open|r")
+        GameTooltip:AddLine("|cffaaaaaaWhen you open the bank, items in your|r")
+        GameTooltip:AddLine("|cffaaaaaastash list (below) are automatically|r")
+        GameTooltip:AddLine("|cffaaaaaamoved from bags into the bank.|r")
+        GameTooltip:AddLine("|cffaaaaaaPer-character toggle. Default OFF.|r")
+        GameTooltip:Show()
+    end)
+    autoDepCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    g_autoDepositCb = autoDepCb
+
+    -- "Deposit now" button
+    local depositNowBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    depositNowBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -176)
+    depositNowBtn:SetWidth(180); depositNowBtn:SetHeight(22)
+    depositNowBtn:SetText("Deposit Stash Now")
+    depositNowBtn:SetScript("OnClick", function() EAL_DepositStashItems(true) end)
+    MakeTooltipButton(depositNowBtn, "|cffffd700Deposit Stash Now|r", {
+        "|cffaaaaaaForce a stash deposit immediately.|r",
+        "|cffaaaaaaThe bank window must be open.|r",
+        "|cffaaaaaaAlso bound to |cffffff00/eal deposit|r.",
+    })
+
+    -- Stash list section
+    MakeDivider(pBank, -210)
+    MakeHeader(pBank, L["STASH LIST"] ..
+               "  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -220)
+
+    -- Drop target on the panel
+    pBank:EnableMouse(true)
+    pBank:SetScript("OnReceiveDrag", function(self)
+        local cursorType, _, link = GetCursorInfo()
+        if cursorType == "item" and link then
+            ClearCursor()
+            local name = GetItemInfo(link)
+            if name then EAL_LoadIntoListInput(name) end
+        end
+    end)
+
+    local stashInput = CreateFrame("EditBox", "EAL_StashInput", pBank, "InputBoxTemplate")
+    stashInput:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -242)
+    stashInput:SetWidth(204); stashInput:SetHeight(20)
+    stashInput:SetAutoFocus(false); stashInput:SetMaxLetters(64)
+    stashInput:SetScript("OnReceiveDrag", function(self)
+        local cursorType, _, link = GetCursorInfo()
+        if cursorType == "item" and link then
+            ClearCursor()
+            local name = GetItemInfo(link)
+            if name then
+                self:SetText(name); self:SetFocus()
+            end
+        end
+    end)
+
+    local function AddStashEntry(list)
+        local text = stashInput:GetText():match("^%s*(.-)%s*$")
+        if text == "" then return end
+        for _, v in ipairs(list) do
+            if v:lower() == text:lower() then
+                stashInput:SetText(""); return
+            end
+        end
+        table.insert(list, text); stashInput:SetText("")
+        EAL_RefreshStashList()
+    end
+    stashInput:SetScript("OnEnterPressed", function(self)
+        AddStashEntry(EAL_DB.stashList); self:ClearFocus()
+    end)
+
+    local stashAcctBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    stashAcctBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 228, -240)
+    stashAcctBtn:SetWidth(56); stashAcctBtn:SetHeight(22); stashAcctBtn:SetText("+Acct")
+    stashAcctBtn:SetScript("OnClick", function() AddStashEntry(EAL_DB.stashList) end)
+    MakeTooltipButton(stashAcctBtn, "|cffb9b9b9Add to Account Stash|r", {
+        "|cffaaaaaaShared across all characters.|r",
+    })
+
+    local stashCharBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    stashCharBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 286, -240)
+    stashCharBtn:SetWidth(56); stashCharBtn:SetHeight(22); stashCharBtn:SetText("+Char")
+    stashCharBtn:SetScript("OnClick", function() AddStashEntry(EAL_CDB.stashList) end)
+    MakeTooltipButton(stashCharBtn, "|cff87ceebAdd to Character Stash|r", {
+        "|cffaaaaaaApplies only to this character.|r",
+    })
+
+    local stashClearBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    stashClearBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 286, -268)
+    stashClearBtn:SetWidth(56); stashClearBtn:SetHeight(22); stashClearBtn:SetText(L["Clear"])
+    stashClearBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
+    stashClearBtn:SetScript("OnClick", function()
+        StaticPopup_Show("AUTOLOOT_CONFIRM_RESET_STASH")
+    end)
+    MakeTooltipButton(stashClearBtn, "|cffff4444Clear Stash List|r", {
+        "|cffaaaaaaClears account + character stash list.|r",
+        "|cffff9900Confirmation required.|r",
+    })
+
+    -- Drag-drop hint
+    local stashHint = pBank:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    stashHint:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -274)
+    stashHint:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -68, -274)
+    stashHint:SetJustifyH("LEFT")
+    stashHint:SetText("|cffaaaaaaTip: drag an item onto this tab, or |cffffff00Ctrl+Shift+Click|r|cffaaaaaa.|r")
+
+    -- Scrollable stash list (mirror of whitelist scroll)
+    local sListBg = CreateFrame("Frame", nil, pBank)
+    sListBg:SetPoint("TOPLEFT", pBank, "TOPLEFT", 14, -298)
+    sListBg:SetWidth(332); sListBg:SetHeight(MAX_ROWS * ROW_HEIGHT + 8)
+    sListBg:SetBackdrop({
+        bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 },
+    })
+    sListBg:SetBackdropColor(0, 0, 0, 0.85)
+    sListBg:EnableMouseWheel(true)
+    sListBg:SetScript("OnMouseWheel", function(self, delta)
+        g_stashOffset = g_stashOffset - delta
+        EAL_RefreshStashList()
+    end)
+
+    local sRowW = 332 - 8 - 8
+    for i = 1, MAX_ROWS do
+        local row = CreateFrame("Frame", nil, sListBg)
+        row:SetWidth(sRowW); row:SetHeight(ROW_HEIGHT)
+        row:SetPoint("TOPLEFT", 4, -4 - (i - 1) * ROW_HEIGHT)
+
+        local rowBg = row:CreateTexture(nil, "BACKGROUND")
+        rowBg:SetAllPoints()
+        if i % 2 == 0 then rowBg:SetTexture(0.12, 0.12, 0.12, 0.6)
+        else               rowBg:SetTexture(0.06, 0.06, 0.06, 0.6) end
+
+        local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lbl:SetPoint("LEFT", 6, 0)
+        lbl:SetWidth(sRowW - 66); lbl:SetJustifyH("LEFT"); lbl:SetWordWrap(false)
+
+        local removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        removeBtn:SetPoint("RIGHT", -2, 0)
+        removeBtn:SetWidth(54); removeBtn:SetHeight(18)
+        removeBtn:SetText(L["Remove"])
+        removeBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
+
+        row.label = lbl; row.removeBtn = removeBtn
+        row:Hide(); g_stashRows[i] = row
+    end
+
+    local sTrack = CreateFrame("Frame", nil, sListBg)
+    sTrack:SetWidth(8); sTrack:SetHeight(MAX_ROWS * ROW_HEIGHT)
+    sTrack:SetPoint("TOPRIGHT", -4, -4)
+    local sTrackTex = sTrack:CreateTexture(nil, "BACKGROUND")
+    sTrackTex:SetAllPoints(); sTrackTex:SetTexture(0.08, 0.08, 0.08, 0.9)
+    local sThumb = sTrack:CreateTexture(nil, "ARTWORK")
+    sThumb:SetWidth(6); sThumb:SetPoint("TOP", sTrack, "TOP", 0, 0)
+    sThumb:SetTexture(0.55, 0.45, 0.25, 0.9); sThumb:Hide()
+    g_stashScrollThumb = sThumb
+
     -- Bottom hint (always visible across tabs)
     local hint = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("BOTTOM", 0, 14)
-    hint:SetText("|cffaaaaaa/eal toggle | sell | reset   -   minimap button, right-click to enable|r")
+    hint:SetText("|cffaaaaaa/eal toggle | sell | deposit | reset   -   minimap right-click toggles enable|r")
 
     -- Restore last-selected tab, or default to General
     local startTab = tonumber(EAL_DB.lastTab) or 1
@@ -2106,6 +2559,7 @@ local function EAL_BuildGUI()
 
     EAL_UpdateStatus()
     EAL_RefreshBlacklist()
+    EAL_RefreshStashList()
 
     return win
 end
@@ -2237,6 +2691,7 @@ eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("MERCHANT_SHOW")
 eventFrame:RegisterEvent("MERCHANT_CLOSED")
 eventFrame:RegisterEvent("BAG_UPDATE")
+eventFrame:RegisterEvent("BANKFRAME_OPENED")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -2261,6 +2716,10 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "BAG_UPDATE" then
         bagUpdateDirty = true
+
+    elseif event == "BANKFRAME_OPENED" then
+        -- Slight delay so the bank frame is fully populated before scanning.
+        After(0.2, function() EAL_DepositStashItems(false) end)
     end
 end)
 
@@ -2299,12 +2758,14 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         StartSellCycle()
     elseif cmd == "ilvlsell" or cmd == "lowilvl" then
         EAL_PromptSellLowILvl()
+    elseif cmd == "deposit" or cmd == "stash" then
+        EAL_DepositStashItems(true)
     elseif cmd == "minimap" then
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | ilvlsell | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()

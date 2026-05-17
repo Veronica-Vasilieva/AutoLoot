@@ -34,6 +34,9 @@ L["Sell"]                  = "Sell"
 L["Actions"]               = "Actions"
 L["Whitelist"]             = "Whitelist"
 L["About"]                 = "About"
+L["Bank"]                  = "Bank"
+L["BANK SETTINGS"]         = "BANK SETTINGS"
+L["STASH LIST"]            = "STASH LIST"
 
 -- Status / labels
 L["by"]                    = "by"

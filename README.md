@@ -74,6 +74,7 @@ If your server uses different names (or a different language), open the AutoLoot
 | `/eal enable` / `/eal disable` | Explicit on/off |
 | `/eal sell` | Force a sell cycle now |
 | `/eal ilvlsell` | Sell all equippable gear at or below the configured iLvl threshold (default 199), with a confirmation popup |
+| `/eal deposit` (alias `/eal stash`) | Force a stash-list deposit cycle at the open bank window |
 | `/eal reset` | Clear whitelist (confirmation required) |
 | `/eal minimap` | Show/hide the minimap button |
 | `/eal help` | Print the command list |

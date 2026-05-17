@@ -1,5 +1,21 @@
 # Changelog — AutoLoot
 
+## [4.5.0] - 2026-05-17
+
+### Added
+- **Bank tab.** New 5th tab in the settings window: **Bank**.
+- **Auto-deposit on bank open** (per-character toggle). When you open your bank, AutoLoot scans your bags for items matching the stash list and moves them into the bank automatically. Items merge into existing partial stacks where possible, otherwise take the first empty bank slot. Bank-full conditions print a summary. Default OFF; opt-in per character.
+- **Stash list.** Mirror of the sell-whitelist with the same two-scope storage (account `[A]` + per-character `[C]`). UI: input box + `+Acct` / `+Char` buttons, scrollable list with `Remove` rows, `Clear` button (confirmation required).
+- **Drag-drop + Ctrl+Shift+Click router.** The existing item-quick-add routing (drag-drop onto the window, or Ctrl+Shift+Click a link anywhere) now targets the **Stash** input when the Bank tab is active, or the **Whitelist** input when any other tab is active. Default fall-through is Whitelist.
+- **`Deposit Stash Now`** button on the Bank tab + `/eal deposit` (alias `/eal stash`) slash command. Forces a deposit pass immediately when the bank window is open.
+
+### Changed
+- **Tab strip is now variable-width.** Each tab button auto-sizes to fit its label. With 5 tabs in a 360-wide window, fixed-width tabs would either clip the longest label or overflow the panel. Auto-sizing keeps everything inside the borders.
+- **Bottom hint** updated to mention `deposit` alongside `toggle | sell | reset`.
+
+### Migration
+- `EAL_DB.stashList = {}` added to account SavedVariables; `EAL_CharDB.stashList = {}` and `EAL_CharDB.autoDepositToBank = false` added per character. All on first load via `MergeDefaults`, no schema bump needed.
+
 ## [4.4.4] - 2026-05-17
 
 ### Fixed
