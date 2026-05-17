@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.10.3] - 2026-05-18
+
+### Fixed
+- **Header divider cut through the "by Veronica-Vasilieva" byline.** The divider was anchored at `y=-36`, but the byline (anchored 2 px below the title's bottom edge) spans `y=-32` to `y=-44` — so the line landed right in the middle of the byline text. Moved the divider to `y=-46` so it sits cleanly below the byline. Affected every tab; visible since the v4.3.0 tab rewrite.
+
 ## [4.10.2] - 2026-05-18
 
 ### Fixed

@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.10.2"
+local ADDON_VERSION = "4.10.3"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1951,8 +1951,11 @@ local function EAL_BuildGUI()
     end)
     infoBadge:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-    -- Status row (always visible)
-    MakeDivider(win, -36)
+    -- Status row (always visible).  Divider sits BELOW the byline:
+    --   title  spans y=-14..-30 (GameFontNormalLarge)
+    --   byline anchored title-bottom -2  -->  y=-32..-44
+    -- so the divider has to be at y<=-46 to clear the byline text.
+    MakeDivider(win, -46)
     local statusLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     statusLabel:SetPoint("TOPLEFT", 18, -48)
     statusLabel:SetWidth(220); statusLabel:SetJustifyH("LEFT")
