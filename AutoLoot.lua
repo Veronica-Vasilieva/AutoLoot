@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.5.0"
+local ADDON_VERSION = "4.5.1"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -58,7 +58,6 @@ local FAST_MODE_BATCH_MULTIPLIER = 2
 local FAST_MODE_DELAY_DIVISOR    = 2
 
 local TOME_PREFIX_LOWER   = "tome of echo:"
-local SAVAGE_PREFIX_LOWER = "savage "
 
 -- SavedVariables schema
 local DEFAULTS = {
@@ -295,66 +294,6 @@ local function IsInStashList(itemName)
         end
     end
     return false
-end
-
--- Scans all bags for items whose name starts with "Savage " and deletes them
--- one at a time, auto-confirming the DELETE_ITEM popup between each.
-local function EAL_DeleteSavageGear()
-    if InCombatLockdown() then
-        Print("|cffff4444Cannot delete items during combat.|r")
-        return
-    end
-
-    local toDelete = {}
-    for bag = 0, 4 do
-        local numSlots = GetContainerNumSlots(bag)
-        for slot = 1, numSlots do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
-                local name = GetItemInfo(link)
-                if name and name:lower():sub(1, #SAVAGE_PREFIX_LOWER) == SAVAGE_PREFIX_LOWER then
-                    table.insert(toDelete, { bag = bag, slot = slot })
-                end
-            end
-        end
-    end
-
-    if #toDelete == 0 then
-        Print("No Savage PvP gear found in bags.")
-        return
-    end
-
-    local total = #toDelete
-    Print("Deleting |cffffff00" .. total .. "|r Savage PvP item(s)...")
-
-    local function DeleteNext(idx)
-        if idx > #toDelete then
-            Print("|cffffff00" .. total .. "|r Savage PvP item(s) deleted.")
-            return
-        end
-        local item = toDelete[idx]
-        local link = GetContainerItemLink(item.bag, item.slot)
-        if link then
-            local name = GetItemInfo(link)
-            if name and name:lower():sub(1, #SAVAGE_PREFIX_LOWER) == SAVAGE_PREFIX_LOWER then
-                ClearCursor()
-                PickupContainerItem(item.bag, item.slot)
-                DeleteCursorItem()
-                After(0.05, function()
-                    local popup = StaticPopup_FindVisible("DELETE_ITEM")
-                    if popup then
-                        local btn = _G[popup .. "Button1"]
-                        if btn then btn:Click() end
-                    end
-                    After(0.15, function() DeleteNext(idx + 1) end)
-                end)
-                return
-            end
-        end
-        DeleteNext(idx + 1)
-    end
-
-    DeleteNext(1)
 end
 
 -- Adds every bag item whose name starts with "Tome of Echo:" to the account whitelist.
@@ -1245,17 +1184,6 @@ end
 -------------------------------------------------------------------------------
 -- Static popup dialogs
 -------------------------------------------------------------------------------
-StaticPopupDialogs["AUTOLOOT_CONFIRM_DELETE_SAVAGE"] = {
-    text         = "Permanently delete ALL items in your bags whose name starts with \"Savage \"?\n\n|cffff4444This cannot be undone.|r",
-    button1      = "Delete",
-    button2      = "Cancel",
-    OnAccept     = function() EAL_DeleteSavageGear() end,
-    timeout      = 0,
-    whileDead    = true,
-    hideOnEscape = true,
-    preferredIndex = 3,
-}
-
 StaticPopupDialogs["AUTOLOOT_CONFIRM_RESET_WHITELIST"] = {
     text         = "Clear the entire whitelist (account + current character)?",
     button1      = "Clear",
@@ -1588,7 +1516,7 @@ end
 -- Tab content panels (one shown at a time):
 --   1. General   -- enable/disable, force sell, fast mode, sound, vendor btn
 --   2. Sell      -- companion names, sell quality, auto-delete unsellable
---   3. Actions   -- quick-sell by iLvl, Savage PvP delete
+--   3. Actions   -- quick-sell by iLvl
 --   4. Whitelist -- name input, +Acct/+Char, scrollable list, tome helper
 -- About info is reachable from a small "?" badge in the top-right corner.
 -------------------------------------------------------------------------------
@@ -2198,22 +2126,6 @@ local function EAL_BuildGUI()
     ilvlInput:SetScript("OnEscapePressed", function(self)
         self:SetText(tostring(EAL_DB.ilvlSellThreshold or 199)); self:ClearFocus()
     end)
-
-    -- Savage delete
-    MakeDivider(pActions, -184)
-    local savageBtn = CreateFrame("Button", nil, pActions, "GameMenuButtonTemplate")
-    savageBtn:SetPoint("TOPLEFT", pActions, "TOPLEFT", 18, -196)
-    savageBtn:SetWidth(324); savageBtn:SetHeight(22)
-    savageBtn:SetText(L["Delete All Savage PvP Gear from Bags"])
-    savageBtn:GetNormalFontObject():SetTextColor(1, 0.35, 0.35)
-    savageBtn:SetScript("OnClick", function()
-        StaticPopup_Show("AUTOLOOT_CONFIRM_DELETE_SAVAGE")
-    end)
-    MakeTooltipButton(savageBtn, "|cffff4444Delete Savage PvP Gear|r", {
-        "|cffaaaaaaScans bags for every item whose name|r",
-        "|cffaaaaaastarts with 'Savage ' and deletes them.|r",
-        "|cffff9900Confirmation required. Irreversible.|r",
-    })
 
     -------------------------------------------------------------------------
     -- Tab 4: WHITELIST

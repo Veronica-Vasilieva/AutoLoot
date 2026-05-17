@@ -88,7 +88,6 @@ L["Auto-delete unsellable"] = "Auto-delete unsellable"
 
 -- Action buttons
 L["Sell gear at iLvl %d or below"] = "Sell gear at iLvl %d or below"
-L["Delete All Savage PvP Gear from Bags"] = "Delete All Savage PvP Gear from Bags"
 L["Whitelist all 'Tome of Echo:' in bags"] = "Whitelist all 'Tome of Echo:' in bags"
 
 -- Chat messages

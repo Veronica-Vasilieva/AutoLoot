@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.5.1] - 2026-05-17
+
+### Removed
+- **"Delete All Savage PvP Gear from Bags" button (and supporting code).** The Sell-tab auto-delete-by-quality grid (added in v4.2.0 + Grey-special in v4.4.4) supersedes this Ebonhold-specific helper. The button, the `AUTOLOOT_CONFIRM_DELETE_SAVAGE` static popup, the `EAL_DeleteSavageGear` function, and the `SAVAGE_PREFIX_LOWER` constant are all gone. Users who want the same behavior can now tick the appropriate quality (typically `Uncommon`) under the auto-delete-unsellable section on the Sell tab, or use the `Grey` option for grey items regardless of vendor price.
+
 ## [4.5.0] - 2026-05-17
 
 ### Added
