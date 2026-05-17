@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.3.0"
+local ADDON_VERSION = "4.4.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -103,6 +103,19 @@ local DEFAULTS = {
     -- because on many private servers iLvl 200+ has crafting / upgrade
     -- uses, while ≤199 is safe junk.
     ilvlSellThreshold = 199,
+
+    -- Per-item sell-price cap (in copper). Items whose vendor sellPrice
+    -- exceeds this value are NEVER auto-sold, no matter what quality
+    -- toggles say.  0 = disabled (current behavior). 50000 = 5g.
+    -- 100000 = 10g.  Protects accidentally-vendoring valuable BoEs
+    -- whose names you forgot to whitelist.
+    sellPriceMax     = 0,
+
+    -- Repair cost cap (in copper).  If a merchant's RepairAllCost
+    -- exceeds this value, the auto-repair step is skipped (the sell
+    -- cycle still proceeds).  0 = disabled (always repair).  Prevents
+    -- accidental gold drain at unusually expensive repair vendors.
+    repairCostCap    = 0,
 
     -- Whitelist scope (union of account + per-character is used at runtime)
     blacklist        = {},        -- account-wide whitelist (name misnomer kept for back-compat)
@@ -490,6 +503,7 @@ end
 -------------------------------------------------------------------------------
 local function EAL_ScanLowILvlGear(threshold)
     local matches, totalValue = {}, 0
+    local priceMax = EAL_DB.sellPriceMax or 0
     for bag = 0, 4 do
         local numSlots = GetContainerNumSlots(bag) or 0
         for slot = 1, numSlots do
@@ -499,6 +513,7 @@ local function EAL_ScanLowILvlGear(threshold)
                 if name and iLevel and iLevel > 0 and iLevel <= threshold
                    and equipLoc and equipLoc ~= ""
                    and sellPrice and sellPrice > 0
+                   and (priceMax == 0 or sellPrice <= priceMax)
                    and not IsBlacklisted(name) then
                     local _, count = GetContainerItemInfo(bag, slot)
                     count = count or 1
@@ -633,13 +648,14 @@ local function SellItems(totalSold, totalSkipped)
     local PULSE_CAP   = EAL_DB.fastMode and (MAX_SELL_PER_PULSE * FAST_MODE_BATCH_MULTIPLIER) or MAX_SELL_PER_PULSE
     local BATCH_DELAY = EAL_DB.fastMode and (SELL_BATCH_DELAY / FAST_MODE_DELAY_DIVISOR) or SELL_BATCH_DELAY
 
+    local priceMax = EAL_DB.sellPriceMax or 0   -- copper; 0 = disabled
     for bag = 0, 4 do
         if capped then break end
         local numSlots = GetContainerNumSlots(bag)
         for slot = 1, numSlots do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                local name, _, quality = GetItemInfo(link)
+                local name, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(link)
                 if quality and name then
                     local sell =
                         (quality == Q_GREY     and EAL_DB.sellGrey)     or
@@ -649,6 +665,13 @@ local function SellItems(totalSold, totalSkipped)
                         (quality == Q_EPIC     and EAL_DB.sellEpic)
 
                     if sell and IsBlacklisted(name) then
+                        sell = false
+                        skipped = skipped + 1
+                    end
+
+                    -- Per-item price cap. Protects expensive BoEs from
+                    -- accidental sale even if their quality is ticked.
+                    if sell and priceMax > 0 and sellPrice and sellPrice > priceMax then
                         sell = false
                         skipped = skipped + 1
                     end
@@ -739,8 +762,18 @@ local function OnMerchantShow()
 
     After(0.3, function()
         if CanMerchantRepair() then
-            RepairAllItems()
-            Print("All items repaired.")
+            local cost = GetRepairAllCost() or 0
+            local cap  = EAL_DB.repairCostCap or 0
+            if cost == 0 then
+                -- Nothing to repair; silent.
+            elseif cap > 0 and cost > cap then
+                Print("|cffff4444Repair cost " .. FormatMoney(cost) ..
+                      " exceeds cap " .. FormatMoney(cap) ..
+                      ". Skipping repair.|r")
+            else
+                RepairAllItems()
+                Print("All items repaired.  |cffaaaaaa(" .. FormatMoney(cost) .. ")|r")
+            end
         end
         SellItems()
     end)
@@ -851,6 +884,54 @@ local function EAL_DeleteUnsellableItems()
     end
 
     DeleteNext(1)
+end
+
+-------------------------------------------------------------------------------
+-- Whitelist quick-add helpers (drag-drop + Ctrl+Shift+Click hook)
+--
+-- Both paths funnel through EAL_LoadIntoWhitelistInput, which writes the item
+-- name into the whitelist input box (EAL_BlacklistInput) and prints a hint.
+-- The user then clicks +Acct or +Char to commit. We deliberately do NOT
+-- auto-commit, so an accidental drag still requires one click before the
+-- whitelist is mutated.
+-------------------------------------------------------------------------------
+local function EAL_LoadIntoWhitelistInput(itemName)
+    if not itemName or itemName == "" then return false end
+    local input = _G["EAL_BlacklistInput"]
+    if not input then
+        Print("|cffff4444Whitelist input not ready. Open AutoLoot first.|r")
+        return false
+    end
+    input:SetText(itemName)
+    -- Make sure the whitelist tab is visible so the user can see the input.
+    if EAL_Window and not EAL_Window:IsShown() then EAL_Window:Show() end
+    if EAL_DB.lastTab ~= 4 and EAL_Window then
+        -- The window builder stashed a ShowTab closure on the window itself
+        -- under EAL_Window.ShowTab; fall back to setting lastTab if absent.
+        if type(EAL_Window.ShowTab) == "function" then
+            EAL_Window.ShowTab(4)
+        else
+            EAL_DB.lastTab = 4
+        end
+    end
+    Print("Whitelist: |cffffff00" .. itemName ..
+          "|r loaded. Click |cffb9b9b9+Acct|r or |cff87ceeb+Char|r to commit.")
+    return true
+end
+
+-- Hook HandleModifiedItemClick: Ctrl+Shift+Click an item link anywhere
+-- (bag, chat, tooltip, AH, etc.) and we load its name into the whitelist.
+-- We chose Ctrl+Shift because no Blizzard UI element binds it by default.
+-- Plain Shift-click still inserts into chat as normal.
+local _origHandleModifiedItemClick = HandleModifiedItemClick
+HandleModifiedItemClick = function(link, ...)
+    if link and IsControlKeyDown() and IsShiftKeyDown() then
+        local name = GetItemInfo(link)
+        if name and EAL_LoadIntoWhitelistInput(name) then
+            return true   -- swallow the click; don't fall through to chat
+        end
+    end
+    return _origHandleModifiedItemClick(link, ...)
 end
 
 -- Mount state watcher + companion stuck check. Bag fullness is driven by
@@ -1332,6 +1413,7 @@ local function EAL_BuildGUI()
         end
         EAL_DB.lastTab = idx
     end
+    win.ShowTab = ShowTab   -- expose for external callers (e.g. drag-drop loader)
 
     -- Hand-roll tabs as simple buttons; OptionsFrameTabButtonTemplate
     -- inherits a fixed bottom-anchored chevron texture that fights us here.
@@ -1447,10 +1529,94 @@ local function EAL_BuildGUI()
             "|cffaaaaaa(repair vendors, quest vendors, etc).|r",
         })
 
-    -- Vendor-button hint + show/hide toggle
-    MakeDivider(pGeneral, -222)
+    -- ---- Sell-price max (input field in gold) ----------------------
+    local sellPriceLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sellPriceLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -222)
+    sellPriceLbl:SetText("Skip sell if item is worth more than")
+    local sellPriceInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
+    sellPriceInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 250, -220)
+    sellPriceInput:SetWidth(56); sellPriceInput:SetHeight(20)
+    sellPriceInput:SetAutoFocus(false); sellPriceInput:SetMaxLetters(6)
+    sellPriceInput:SetNumeric(true); sellPriceInput:SetJustifyH("CENTER")
+    sellPriceInput:SetText(tostring(math.floor((EAL_DB.sellPriceMax or 0) / 10000)))
+    local sellPriceUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    sellPriceUnit:SetPoint("LEFT", sellPriceInput, "RIGHT", 4, 0)
+    sellPriceUnit:SetText("|cffffd700g|r  |cffaaaaaa(0 = off)|r")
+    sellPriceInput:SetScript("OnEnterPressed", function(self)
+        local g = tonumber(self:GetText()) or 0
+        if g < 0 then g = 0 end
+        EAL_DB.sellPriceMax = g * 10000     -- gold -> copper
+        self:SetText(tostring(g))
+        self:ClearFocus()
+        if g > 0 then
+            Print("Sell-price cap: items worth more than |cffffff00" ..
+                  g .. "g|r will be skipped.")
+        else
+            Print("Sell-price cap |cffaaaaaaDISABLED|r.")
+        end
+    end)
+    sellPriceInput:SetScript("OnEscapePressed", function(self)
+        self:SetText(tostring(math.floor((EAL_DB.sellPriceMax or 0) / 10000)))
+        self:ClearFocus()
+    end)
+    sellPriceInput:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffffd700Sell-price cap|r")
+        GameTooltip:AddLine("|cffaaaaaaItems whose vendor sell price exceeds this|r")
+        GameTooltip:AddLine("|cffaaaaaaamount are NEVER auto-sold, even if their|r")
+        GameTooltip:AddLine("|cffaaaaaaquality is ticked.  Set to 0 to disable.|r")
+        GameTooltip:AddLine("|cffaaaaaaProtects valuable BoEs whose names you|r")
+        GameTooltip:AddLine("|cffaaaaaaforgot to whitelist.  Press Enter to save.|r")
+        GameTooltip:Show()
+    end)
+    sellPriceInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- ---- Repair cost cap (input field in gold) ---------------------
+    local repairLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    repairLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -246)
+    repairLbl:SetText("Skip auto-repair if cost is over")
+    local repairInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
+    repairInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 250, -244)
+    repairInput:SetWidth(56); repairInput:SetHeight(20)
+    repairInput:SetAutoFocus(false); repairInput:SetMaxLetters(6)
+    repairInput:SetNumeric(true); repairInput:SetJustifyH("CENTER")
+    repairInput:SetText(tostring(math.floor((EAL_DB.repairCostCap or 0) / 10000)))
+    local repairUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    repairUnit:SetPoint("LEFT", repairInput, "RIGHT", 4, 0)
+    repairUnit:SetText("|cffffd700g|r  |cffaaaaaa(0 = off)|r")
+    repairInput:SetScript("OnEnterPressed", function(self)
+        local g = tonumber(self:GetText()) or 0
+        if g < 0 then g = 0 end
+        EAL_DB.repairCostCap = g * 10000
+        self:SetText(tostring(g))
+        self:ClearFocus()
+        if g > 0 then
+            Print("Repair cost cap: skip if total exceeds |cffffff00" ..
+                  g .. "g|r.")
+        else
+            Print("Repair cost cap |cffaaaaaaDISABLED|r (always repair).")
+        end
+    end)
+    repairInput:SetScript("OnEscapePressed", function(self)
+        self:SetText(tostring(math.floor((EAL_DB.repairCostCap or 0) / 10000)))
+        self:ClearFocus()
+    end)
+    repairInput:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffffd700Repair cost cap|r")
+        GameTooltip:AddLine("|cffaaaaaaWhen the merchant supports repairs,|r")
+        GameTooltip:AddLine("|cffaaaaaaauto-repair is skipped if the total cost|r")
+        GameTooltip:AddLine("|cffaaaaaaexceeds this amount.  The sell cycle still|r")
+        GameTooltip:AddLine("|cffaaaaaaproceeds.  Set to 0 to always repair.|r")
+        GameTooltip:AddLine("|cffaaaaaaPress Enter to save.|r")
+        GameTooltip:Show()
+    end)
+    repairInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Vendor-button hint + show/hide toggle (shifted down to make room)
+    MakeDivider(pGeneral, -274)
     local vendorHint = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    vendorHint:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -234)
+    vendorHint:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -286)
     vendorHint:SetWidth(220); vendorHint:SetJustifyH("LEFT")
     vendorHint:SetText("|cffaaaaaaClick vendor button, then Interact key to sell|r")
 
@@ -1459,7 +1625,7 @@ local function EAL_BuildGUI()
         else                          btn:SetText(L["Show Vendor Btn"]) end
     end
     local vendorToggle = CreateFrame("Button", nil, pGeneral, "GameMenuButtonTemplate")
-    vendorToggle:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 242, -230)
+    vendorToggle:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 242, -282)
     vendorToggle:SetWidth(100); vendorToggle:SetHeight(22)
     UpdateVendorToggleBtn(vendorToggle)
     vendorToggle:SetScript("OnClick", function(self)
@@ -1472,7 +1638,7 @@ local function EAL_BuildGUI()
     g_vendorBtnToggle = vendorToggle
 
     -- Minimap button toggle
-    MakeCheckbox(pGeneral, "Show minimap button", 18, -266,
+    MakeCheckbox(pGeneral, "Show minimap button", 18, -318,
         function() return EAL_DB.showMinimapButton end,
         function(v)
             EAL_DB.showMinimapButton = v
@@ -1692,10 +1858,38 @@ local function EAL_BuildGUI()
     MakeHeader(pWhitelist, L["ITEM WHITELIST"] ..
                "  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -124)
 
+    -- Make the whole panel a drop target.  When an item is dropped on
+    -- empty panel space, we extract its name and load it into the input
+    -- so the user only has to click +Acct/+Char to commit.
+    pWhitelist:EnableMouse(true)
+    pWhitelist:SetScript("OnReceiveDrag", function(self)
+        local cursorType, _, link = GetCursorInfo()
+        if cursorType == "item" and link then
+            ClearCursor()
+            local name = GetItemInfo(link)
+            if name then EAL_LoadIntoWhitelistInput(name) end
+        end
+    end)
+
     local inputBox = CreateFrame("EditBox", "EAL_BlacklistInput", pWhitelist, "InputBoxTemplate")
     inputBox:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 18, -146)
     inputBox:SetWidth(204); inputBox:SetHeight(20)
     inputBox:SetAutoFocus(false); inputBox:SetMaxLetters(64)
+
+    -- Also accept drops directly on the input box so we can override the
+    -- default EditBox behavior (which would insert "[Item Name]" with
+    -- brackets and color codes).  We strip to the plain name instead.
+    inputBox:SetScript("OnReceiveDrag", function(self)
+        local cursorType, _, link = GetCursorInfo()
+        if cursorType == "item" and link then
+            ClearCursor()
+            local name = GetItemInfo(link)
+            if name then
+                self:SetText(name)
+                self:SetFocus()
+            end
+        end
+    end)
 
     local function AddBlacklistEntry(list)
         local text = inputBox:GetText():match("^%s*(.-)%s*$")
@@ -1727,6 +1921,14 @@ local function EAL_BuildGUI()
     MakeTooltipButton(addCharBtn, "|cff87ceebAdd to Character Whitelist|r", {
         "|cffaaaaaaApplies only to this character.|r",
     })
+
+    -- Drag-and-drop hint
+    local dropHint = pWhitelist:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    dropHint:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 18, -396)
+    dropHint:SetPoint("TOPRIGHT", pWhitelist, "TOPRIGHT", -18, -396)
+    dropHint:SetJustifyH("CENTER")
+    dropHint:SetText("|cffaaaaaaTip: drag an item onto this tab, or " ..
+                     "|cffffff00Ctrl+Shift+Click|r|cffaaaaaa an item link anywhere.|r")
 
     local tomeBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
     tomeBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 18, -172)

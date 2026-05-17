@@ -1,5 +1,19 @@
 # Changelog — AutoLoot
 
+## [4.4.0] - 2026-04-24
+
+First user-feature release on top of the v4.3.0 tab/L10n foundation.
+
+### Added
+- **Drag-and-drop whitelist.** Drag any item from your bags directly onto the **Whitelist** tab to load its name into the input box. Click `+Acct` or `+Char` to commit. Dropping on the input field itself works too (with a clean name — no `[Item Name]` brackets like Blizzard's default insertion). The intentional two-step (drop → commit) means an accidental drop never silently mutates your whitelist.
+- **`Ctrl+Shift+Click` to whitelist.** Hold both Ctrl and Shift and click any item link — in chat, in a tooltip, in your bag, in the auction house — and AutoLoot loads its name into the whitelist input. We picked Ctrl+Shift because Blizzard's UI has no default binding for that combo, so plain Shift-click still inserts links into chat as normal.
+- **Per-item sell-price cap.** New field on the **General** tab. Items whose vendor sell price exceeds the configured gold value are NEVER auto-sold, regardless of which quality toggles you've enabled. Protects expensive BoEs whose names you forgot to whitelist. Default `0` = disabled. Applies to both the standard sell cycle and the quick-sell-by-iLvl button.
+- **Repair cost cap.** New field on the **General** tab. When AutoLoot would normally auto-repair at a merchant, it now checks `GetRepairAllCost()` against this cap and skips repair (with a chat warning) if the cost exceeds it. The sell cycle still proceeds normally. Default `0` = disabled (always repair).
+
+### Changed
+- General tab layout shifted to make room for the two new input fields. The vendor-button row and minimap-button toggle moved down by 52 px; no other tabs touched.
+- Auto-repair chat line now includes the cost: `All items repaired.  (5g 23s)`.
+
 ## [4.3.0] - 2026-04-24
 
 Foundation release for the "wider world" expansion. No user-facing feature changes; everything below is groundwork for the bank, mail, guild bank, and AH-helper features arriving in v4.4.0+.
