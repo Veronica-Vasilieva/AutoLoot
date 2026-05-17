@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.4.1"
+local ADDON_VERSION = "4.4.2"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1398,13 +1398,6 @@ local function EAL_BuildGUI()
     local panels = {}
     local tabBtns = {}
 
-    -- Some templated child widgets (notably InputBoxTemplate EditBoxes)
-    -- have been observed to render across tab switches even when their
-    -- parent panel is hidden. Each panel also tracks an explicit list of
-    -- "force-toggle" widgets that get Show()/Hide() called directly on
-    -- every tab switch as a defensive measure.
-    for i = 1, #tabDefs do panels[i].forceWidgets = {} end
-
     local function ShowTab(idx)
         for i, p in ipairs(panels) do
             if i == idx then
@@ -1458,6 +1451,14 @@ local function EAL_BuildGUI()
         return p
     end
     for i = 1, #tabDefs do panels[i] = MakePanel() end
+
+    -- Some templated child widgets (notably InputBoxTemplate EditBoxes)
+    -- have been observed to render across tab switches even when their
+    -- parent panel is hidden. Each panel keeps an explicit list of
+    -- "force-toggle" widgets that get Show()/Hide() called directly on
+    -- every tab switch as a defensive measure on top of normal parent-
+    -- visibility inheritance.
+    for i = 1, #tabDefs do panels[i].forceWidgets = {} end
 
     local pGeneral   = panels[1]
     local pSell      = panels[2]

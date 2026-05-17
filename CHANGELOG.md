@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.4.2] - 2026-05-17
+
+### Fixed
+- **Hot-fix for v4.4.1 load-time crash.** The `forceWidgets` initialization loop ran before the panel frames themselves were created, so `panels[i].forceWidgets = {}` threw `attempt to index field '?' (a nil value)` and the settings window failed to build entirely. Reordered: panels are created first, then their `forceWidgets` tables initialized. The fix from v4.4.1 (inputs bleeding across tabs) is preserved.
+
 ## [4.4.1] - 2026-04-24
 
 ### Fixed
