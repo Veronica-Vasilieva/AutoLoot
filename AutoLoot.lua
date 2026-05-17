@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.9.0"
+local ADDON_VERSION = "4.10.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1761,9 +1761,12 @@ end
 
 local function MakeDivider(parent, y)
     local t = parent:CreateTexture(nil, "ARTWORK")
-    t:SetPoint("TOPLEFT", 14, y)
-    t:SetWidth(312); t:SetHeight(1)
-    t:SetTexture(0.60, 0.40, 0.85, 0.85)   -- v4.9.0 violet
+    -- v4.10.0: stretch divider to the parent's full width minus side
+    -- insets, so it auto-resizes correctly under the new 720-wide window.
+    t:SetPoint("TOPLEFT",  parent, "TOPLEFT",  14, y)
+    t:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -14, y)
+    t:SetHeight(1)
+    t:SetTexture(0.60, 0.40, 0.85, 0.85)
     return t
 end
 
@@ -1855,7 +1858,9 @@ end
 -- About info is reachable from a small "?" badge in the top-right corner.
 -------------------------------------------------------------------------------
 local function EAL_BuildGUI()
-    local W, H = 360, 560
+    -- v4.10.0: landscape window so the custom background image (with its
+    -- gold corner ornaments + decorative border) fits its native aspect.
+    local W, H = 720, 520
     local win = CreateFrame("Frame", "EAL_Window", UIParent)
     win:SetWidth(W); win:SetHeight(H)
     win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", EAL_DB.windowX, EAL_DB.windowY)
@@ -1869,35 +1874,25 @@ local function EAL_BuildGUI()
         EAL_DB.windowX = self:GetLeft()
         EAL_DB.windowY = self:GetTop() - UIParent:GetHeight()
     end)
-    -- v4.9.0 violet reskin.  Dark violet, translucent, with a lighter
-    -- purple border and lavender corner accents.  Background image swap
-    -- planned (user-supplied) -- when added, replace bgFile with the
-    -- path to the custom texture.
+    -- v4.10.0: violet backdrop is the FALLBACK; the real visual is the
+    -- custom background image overlay below.  If the image file is
+    -- missing the violet backdrop shows so the window still looks
+    -- presentable.  No edgeFile -- the image has its own border.
     win:SetBackdrop({
         bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
-        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-        tile = true, tileSize = 32, edgeSize = 32,
-        insets = { left = 11, right = 12, top = 12, bottom = 11 },
+        tile = true, tileSize = 32,
     })
-    win:SetBackdropColor(0.18, 0.10, 0.30, 0.85)        -- dark translucent violet
-    win:SetBackdropBorderColor(0.75, 0.55, 0.95, 1)     -- lighter purple
+    win:SetBackdropColor(0.18, 0.10, 0.30, 0.85)        -- fallback violet
 
-    -- Lavender L-bracket accents at each corner (decorative)
-    local function AccentCorner(point, ox, oy)
-        local horiz = win:CreateTexture(nil, "OVERLAY")
-        horiz:SetTexture("Interface\\Buttons\\WHITE8X8")
-        horiz:SetVertexColor(0.85, 0.65, 1.00, 0.95)
-        horiz:SetSize(16, 2); horiz:SetPoint(point, ox, oy)
-
-        local vert = win:CreateTexture(nil, "OVERLAY")
-        vert:SetTexture("Interface\\Buttons\\WHITE8X8")
-        vert:SetVertexColor(0.85, 0.65, 1.00, 0.95)
-        vert:SetSize(2, 16); vert:SetPoint(point, ox, oy)
-    end
-    AccentCorner("TOPLEFT",      14, -14)
-    AccentCorner("TOPRIGHT",    -14, -14)
-    AccentCorner("BOTTOMLEFT",   14,  14)
-    AccentCorner("BOTTOMRIGHT", -14,  14)
+    -- Custom background image.  Save your texture to:
+    --   Interface\AddOns\AutoLoot\Media\Background.tga
+    -- (or .blp if you've converted it).  Power-of-2 dimensions are
+    -- recommended; a landscape 1024x512 or 1024x1024 fits well.  The
+    -- texture fills the whole window edge-to-edge so the image's own
+    -- gold corner ornaments line up with the window corners.
+    local bgImage = win:CreateTexture(nil, "BACKGROUND", nil, 2)
+    bgImage:SetTexture("Interface\\AddOns\\AutoLoot\\Media\\Background.tga")
+    bgImage:SetAllPoints(win)
 
     win:Hide()
 
@@ -2822,13 +2817,14 @@ local function EAL_BuildGUI()
     sThumb:SetTexture(0.65, 0.45, 0.90, 0.9); sThumb:Hide()
     g_stashScrollThumb = sThumb
 
-    -- ---- Guild Bank sub-section ------------------------------------------
-    MakeDivider(pBank, -490)
-    MakeHeader(pBank, L["GUILD BANK"], 18, -500)
+    -- ---- Guild Bank sub-section (right column in landscape) ---------------
+    -- v4.10.0: moved from below the stash scroll list into the right
+    -- column so everything fits within the new 520-tall window.
+    MakeHeader(pBank, L["GUILD BANK"], 380, -124)
 
     local gbConsolidateBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
-    gbConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 18, -518)
-    gbConsolidateBtn:SetWidth(184); gbConsolidateBtn:SetHeight(22)
+    gbConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -146)
+    gbConsolidateBtn:SetWidth(220); gbConsolidateBtn:SetHeight(22)
     gbConsolidateBtn:SetText("Consolidate Stacks")
     gbConsolidateBtn:SetScript("OnClick", function()
         EAL_ConsolidateGuildBankCurrentTab()
@@ -2846,8 +2842,8 @@ local function EAL_BuildGUI()
     })
 
     local gbHint = pBank:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    gbHint:SetPoint("LEFT", gbConsolidateBtn, "RIGHT", 8, 0)
-    gbHint:SetPoint("RIGHT", pBank, "RIGHT", -14, 0)
+    gbHint:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -178)
+    gbHint:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -14, -178)
     gbHint:SetJustifyH("LEFT")
     gbHint:SetText("|cffaaaaaaOperates on the current GB tab.|r")
 

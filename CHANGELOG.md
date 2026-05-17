@@ -1,5 +1,20 @@
 # Changelog — AutoLoot
 
+## [4.10.0] - 2026-05-17
+
+### Changed — landscape window + custom background image
+- **Settings window reshaped from 360×560 (portrait) to 720×520 (landscape).** Matches the aspect ratio of the user-supplied background image. All tab widgets now have horizontal room to breathe — most tabs keep their left-aligned widget column and let the right side of the window show through to the background scenery.
+- **Custom background image hook.** New texture overlay at `Interface\AddOns\AutoLoot\Media\Background.tga`. The image fills the entire window edge-to-edge, including borders (the image's own gold corner ornaments become the window corners). If the file is missing, the violet backdrop from v4.9.0 shows as a fallback — no errors.
+- **`SetBackdrop` simplified.** Removed the dialog-box edge file (image has its own border). Backdrop bg is kept as the fallback color. Removed the `AccentCorner` L-bracket calls (image has its own corner ornaments).
+- **`MakeDivider` now stretches** to its parent's full width minus 14 px insets. Previously hardcoded to 312 px wide, which looked silly on a 720-wide window.
+- **Bank tab restructured to two columns** so it fits in the new shorter window:
+  - **Left column:** auto-deposit toggle, Deposit Now button, stash list (input + buttons + scroll).
+  - **Right column:** GUILD BANK section (Consolidate Stacks button + hint).
+  - Net effect: same UI, distributed horizontally instead of stacked vertically.
+
+### Setup
+- New `Media/` subdirectory in the addon folder (with a `README.txt` explaining the texture-format options). Save your image as `Background.tga` there. BLP works too if you have a converter — just change the file extension in the `SetTexture` call.
+
 ## [4.9.0] - 2026-05-17
 
 ### Removed
