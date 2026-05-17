@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.4.3] - 2026-05-17
+
+### Fixed
+- **Input-field child textures still leaking across tabs.** In v4.4.1 the inputs themselves were registered for forced hide, but the `InputBoxTemplate` child Region textures (Left/Middle/Right) were still rendering. The ShowTab logic now walks each registered widget's `GetRegions()` and calls `Hide()` + `SetAlpha(0)` on every child explicitly, in addition to hiding the parent. Symmetric restore on show.
+
 ## [4.4.2] - 2026-05-17
 
 ### Fixed

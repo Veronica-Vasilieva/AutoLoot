@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.4.2"
+local ADDON_VERSION = "4.4.3"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1398,14 +1398,32 @@ local function EAL_BuildGUI()
     local panels = {}
     local tabBtns = {}
 
+    -- Aggressive hide: in 3.3.5a, InputBoxTemplate EditBoxes sometimes leak
+    -- their child Region textures (Left/Middle/Right) past a Hide() on the
+    -- parent EditBox.  We Hide() AND SetAlpha(0) on the EditBox, then walk
+    -- its regions and explicitly Hide()/SetAlpha(0) each one too.  Symmetric
+    -- show-path restores everything.
+    local function _setWidgetVisible(w, visible)
+        if visible then
+            w:Show(); w:SetAlpha(1)
+        else
+            w:Hide(); w:SetAlpha(0)
+        end
+        if w.GetRegions then
+            for _, r in ipairs({ w:GetRegions() }) do
+                if r and r.SetAlpha then r:SetAlpha(visible and 1 or 0) end
+                if r and r.Hide and not visible then r:Hide() end
+                if r and r.Show and visible then r:Show() end
+            end
+        end
+    end
+
     local function ShowTab(idx)
         for i, p in ipairs(panels) do
-            if i == idx then
-                p:Show()
-                for _, w in ipairs(p.forceWidgets) do w:Show() end
-            else
-                p:Hide()
-                for _, w in ipairs(p.forceWidgets) do w:Hide() end
+            local active = (i == idx)
+            if active then p:Show() else p:Hide() end
+            for _, w in ipairs(p.forceWidgets) do
+                _setWidgetVisible(w, active)
             end
         end
         for i, b in ipairs(tabBtns) do
