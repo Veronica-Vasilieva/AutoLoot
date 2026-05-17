@@ -2,7 +2,7 @@
 ## Title: AutoLoot
 ## Notes: Automated loot + vendor cycle using summonable companions. /eal or minimap button to open.
 ## Author: Veronica-Vasilieva
-## Version: 4.2.0
+## Version: 4.3.0
 ## OptionalDeps: ProjectEbonhold
 ## SavedVariables: EAL_SavedDB
 ## SavedVariablesPerCharacter: EAL_CharDB
@@ -11,4 +11,15 @@
 ## X-License: Source-available — attribution required, no rebranding, non-commercial. See LICENSE.
 
 Bindings.xml
+
+# Localisation framework — Locale.lua first (defines AutoLoot_L), then
+# locale-specific files (no-op unless GetLocale() matches).
+Locale.lua
+Locale-deDE.lua
+Locale-frFR.lua
+Locale-ruRU.lua
+Locale-esES.lua
+Locale-zhTW.lua
+Locale-koKR.lua
+
 AutoLoot.lua

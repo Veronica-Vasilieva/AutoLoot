@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.2.0"
+local ADDON_VERSION = "4.3.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -32,6 +32,11 @@ _G["EAL_IDENT"]          = ADDON_IDENT
 _G["EAL_ORIGIN"]         = ADDON_URL
 _G["__AutoLoot_origin"]  = ADDON_URL
 _G["__AutoLoot_author"]  = ADDON_AUTHOR
+
+-- Localisation table. Loaded from Locale.lua before this file (.toc order).
+-- Falls back to key-as-value when a translation is missing, so any string
+-- not yet translated just renders in English.
+local L = AutoLoot_L or setmetatable({}, { __index = function(t, k) return k end })
 
 -- Item quality constants (matches GetItemInfo quality return)
 local Q_GREY, Q_WHITE, Q_UNCOMMON, Q_RARE, Q_EPIC = 0, 1, 2, 3, 4
@@ -113,6 +118,10 @@ local DEFAULTS = {
     vendorBtnY       = -400,
     vendorBtnShown   = true,
     minimapAngle     = 200,
+
+    -- Last-selected tab index in the settings window, restored next time
+    -- the window is opened.  1 = General, 2 = Sell, 3 = Actions, 4 = Whitelist.
+    lastTab          = 1,
 }
 
 local CHAR_DEFAULTS = {
@@ -1176,9 +1185,24 @@ local function MakeTooltipButton(btn, title, lines)
     btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 end
 
+-------------------------------------------------------------------------------
+-- Main settings window (tabbed)
+--
+-- Header area  (visible on every tab):
+--   - title + author byline + close button
+--   - status row (state + free slots) and lifetime gold tracker
+--   - tab strip
+-- Tab content panels (one shown at a time):
+--   1. General   -- enable/disable, force sell, fast mode, sound, vendor btn
+--   2. Sell      -- companion names, sell quality, auto-delete unsellable
+--   3. Actions   -- quick-sell by iLvl, Savage PvP delete
+--   4. Whitelist -- name input, +Acct/+Char, scrollable list, tome helper
+-- About info is reachable from a small "?" badge in the top-right corner.
+-------------------------------------------------------------------------------
 local function EAL_BuildGUI()
+    local W, H = 360, 560
     local win = CreateFrame("Frame", "EAL_Window", UIParent)
-    win:SetWidth(340); win:SetHeight(820)
+    win:SetWidth(W); win:SetHeight(H)
     win:SetPoint("TOPLEFT", UIParent, "TOPLEFT", EAL_DB.windowX, EAL_DB.windowY)
     win:SetFrameStrata("HIGH")
     win:SetMovable(true)
@@ -1196,124 +1220,163 @@ local function EAL_BuildGUI()
         tile = true, tileSize = 32, edgeSize = 32,
         insets = { left = 11, right = 12, top = 12, bottom = 11 },
     })
-    -- Warmer, darker bg tint with gold-tinged border (WotLK "merchant hall" feel)
     win:SetBackdropColor(0.10, 0.08, 0.06, 0.95)
     win:SetBackdropBorderColor(0.85, 0.68, 0.28, 1)
 
-    -- Vertical parchment-glow gradient overlay: slightly warmer near the top,
-    -- fades toward the bottom for depth. Low alpha so text stays readable.
-    local bgGrad = win:CreateTexture(nil, "BACKGROUND", nil, 2)
-    bgGrad:SetTexture("Interface\\Buttons\\WHITE8X8")
-    bgGrad:SetPoint("TOPLEFT",     13, -13)
-    bgGrad:SetPoint("BOTTOMRIGHT", -13, 13)
-    bgGrad:SetGradientAlpha("VERTICAL",
-        0.05, 0.04, 0.03, 0.18,   -- bottom (subtle darken)
-        0.22, 0.14, 0.06, 0.10)   -- top (subtle warm glow)
-
-    -- Gold L-bracket accents at each corner
+    -- Gold L-bracket accents at each corner (decorative)
     local function GoldCorner(point, ox, oy)
         local horiz = win:CreateTexture(nil, "OVERLAY")
         horiz:SetTexture("Interface\\Buttons\\WHITE8X8")
         horiz:SetVertexColor(0.90, 0.72, 0.30, 0.95)
-        horiz:SetSize(16, 2)
-        horiz:SetPoint(point, ox, oy)
+        horiz:SetSize(16, 2); horiz:SetPoint(point, ox, oy)
 
         local vert = win:CreateTexture(nil, "OVERLAY")
         vert:SetTexture("Interface\\Buttons\\WHITE8X8")
         vert:SetVertexColor(0.90, 0.72, 0.30, 0.95)
-        vert:SetSize(2, 16)
-        vert:SetPoint(point, ox, oy)
+        vert:SetSize(2, 16); vert:SetPoint(point, ox, oy)
     end
     GoldCorner("TOPLEFT",      14, -14)
     GoldCorner("TOPRIGHT",    -14, -14)
     GoldCorner("BOTTOMLEFT",   14,  14)
     GoldCorner("BOTTOMRIGHT", -14,  14)
 
-    -- Gold rule under the title bar (with additive glow above and below)
-    local function GoldRuleAt(yOffset)
-        local rule = win:CreateTexture(nil, "ARTWORK")
-        rule:SetTexture("Interface\\Buttons\\WHITE8X8")
-        rule:SetVertexColor(0.90, 0.72, 0.30, 1)
-        rule:SetPoint("TOPLEFT",  20, yOffset)
-        rule:SetPoint("TOPRIGHT", -20, yOffset)
-        rule:SetHeight(1)
-
-        local up = win:CreateTexture(nil, "ARTWORK")
-        up:SetTexture("Interface\\Buttons\\WHITE8X8")
-        up:SetVertexColor(1, 0.80, 0.30)
-        up:SetBlendMode("ADD"); up:SetAlpha(0.25)
-        up:SetPoint("BOTTOMLEFT",  rule, "TOPLEFT",  0, 0)
-        up:SetPoint("BOTTOMRIGHT", rule, "TOPRIGHT", 0, 0)
-        up:SetHeight(4)
-
-        local dn = win:CreateTexture(nil, "ARTWORK")
-        dn:SetTexture("Interface\\Buttons\\WHITE8X8")
-        dn:SetVertexColor(1, 0.80, 0.30)
-        dn:SetBlendMode("ADD"); dn:SetAlpha(0.25)
-        dn:SetPoint("TOPLEFT",  rule, "BOTTOMLEFT",  0, 0)
-        dn:SetPoint("TOPRIGHT", rule, "BOTTOMRIGHT", 0, 0)
-        dn:SetHeight(4)
-    end
-    GoldRuleAt(-34)
-
     win:Hide()
 
+    -------------------------------------------------------------------------
+    -- Header area
+    -------------------------------------------------------------------------
     local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -14)
-    title:SetText("AutoLoot |cffaaaaaa& Sell|r  |cff888888v" .. ADDON_VERSION .. "|r")
+    title:SetText(L["AutoLoot"] .. " |cffaaaaaa& " .. L["Sell"] .. "|r" ..
+                  "  |cff888888v" .. ADDON_VERSION .. "|r")
 
-    -- Small author credit under the title. Part of the brand identity;
-    -- removing it constitutes a license violation (see LICENSE §2/§3).
+    -- Small author credit. Brand-identity element; removal violates LICENSE.
     local byline = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     byline:SetPoint("TOP", title, "BOTTOM", 0, -2)
-    byline:SetText("|cff888866by " .. ADDON_AUTHOR .. "|r")
+    byline:SetText("|cff888866" .. L["by"] .. " " .. ADDON_AUTHOR .. "|r")
 
     local closeBtn = CreateFrame("Button", nil, win, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -4, -4)
     closeBtn:SetScript("OnClick", function() win:Hide() end)
 
-    -- Status row
+    -- "?" info badge next to close button. Hover -> About info.
+    local infoBadge = CreateFrame("Frame", nil, win)
+    infoBadge:SetSize(20, 20)
+    infoBadge:SetPoint("TOPRIGHT", -32, -10)
+    infoBadge:EnableMouse(true)
+    local ibBg = infoBadge:CreateTexture(nil, "BACKGROUND")
+    ibBg:SetAllPoints()
+    ibBg:SetTexture(0.10, 0.08, 0.06, 0.85)
+    local ibTxt = infoBadge:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    ibTxt:SetPoint("CENTER", 0, 0)
+    ibTxt:SetText("|cffffd700?|r")
+    infoBadge:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("|cffff9900" .. L["AutoLoot"] .. "|r v" .. ADDON_VERSION)
+        GameTooltip:AddLine("|cff888866" .. L["by"] .. " " .. ADDON_AUTHOR .. "|r")
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("|cffffd700" .. L["Slash commands"] .. ":|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal  /autoloot|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal toggle | sell | ilvlsell|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal reset | minimap | help|r")
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("|cffffd700" .. L["License"] .. ":|r")
+        GameTooltip:AddLine("|cffaaaaaa" .. L["Source-available. Attribution required. See LICENSE for full terms."] .. "|r", 1, 1, 1, true)
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("|cff888866" .. ADDON_URL .. "|r")
+        GameTooltip:Show()
+    end)
+    infoBadge:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Status row (always visible)
     MakeDivider(win, -36)
     local statusLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     statusLabel:SetPoint("TOPLEFT", 18, -48)
-    statusLabel:SetWidth(200)
-    statusLabel:SetJustifyH("LEFT")
+    statusLabel:SetWidth(220); statusLabel:SetJustifyH("LEFT")
     g_statusLabel = statusLabel
 
-    local fastModeCb = CreateFrame("CheckButton", nil, win, "UICheckButtonTemplate")
-    fastModeCb:SetPoint("TOPRIGHT", -11, -42)
-    fastModeCb:SetWidth(24); fastModeCb:SetHeight(24)
-    fastModeCb:SetChecked(EAL_DB.fastMode)
-    local fastModeLbl = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    fastModeLbl:SetPoint("RIGHT", fastModeCb, "LEFT", -2, 0)
-    fastModeLbl:SetText("|cffff4444Fast Mode|r")
-    fastModeCb:SetScript("OnClick", function(self)
-        EAL_DB.fastMode = self:GetChecked() and true or false
-    end)
-    fastModeCb:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:AddLine("|cffff4444Fast Mode|r")
-        GameTooltip:AddLine("|cffff9900Warning: may cause disconnects on|r")
-        GameTooltip:AddLine("|cffff9900lower-end hardware.|r")
-        GameTooltip:AddLine("|cffaaaaaaDoubles items sold per batch and|r")
-        GameTooltip:AddLine("|cffaaaaaahalves the delay between batches.|r")
-        GameTooltip:Show()
-    end)
-    fastModeCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    -- Gold earned
+    -- Gold-earned line (always visible)
     local goldLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     goldLabel:SetPoint("TOPLEFT", 18, -64)
-    goldLabel:SetWidth(304)
-    goldLabel:SetJustifyH("LEFT")
+    goldLabel:SetWidth(322); goldLabel:SetJustifyH("LEFT")
     g_goldLabel = goldLabel
 
+    -- Divider above tab strip
+    MakeDivider(win, -84)
+
+    -------------------------------------------------------------------------
+    -- Tab strip
+    -------------------------------------------------------------------------
+    local tabDefs = {
+        { key = "general",   label = L["General"]   },
+        { key = "sell",      label = L["Sell"]      },
+        { key = "actions",   label = L["Actions"]   },
+        { key = "whitelist", label = L["Whitelist"] },
+    }
+
+    local panels = {}
+    local tabBtns = {}
+
+    local function ShowTab(idx)
+        for i, p in ipairs(panels) do
+            if i == idx then p:Show() else p:Hide() end
+        end
+        for i, b in ipairs(tabBtns) do
+            if i == idx then
+                b:LockHighlight()
+                b:GetFontString():SetTextColor(1.0, 0.82, 0.0)
+            else
+                b:UnlockHighlight()
+                b:GetFontString():SetTextColor(0.8, 0.8, 0.8)
+            end
+        end
+        EAL_DB.lastTab = idx
+    end
+
+    -- Hand-roll tabs as simple buttons; OptionsFrameTabButtonTemplate
+    -- inherits a fixed bottom-anchored chevron texture that fights us here.
+    local TAB_Y, TAB_W, TAB_H = -90, 84, 22
+    for i, def in ipairs(tabDefs) do
+        local btn = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+        btn:SetSize(TAB_W, TAB_H)
+        btn:SetPoint("TOPLEFT", 12 + (i - 1) * (TAB_W + 2), TAB_Y)
+        btn:SetText(def.label)
+        btn:SetScript("OnClick", function() ShowTab(i) end)
+        tabBtns[i] = btn
+    end
+
+    -- Divider below tab strip
+    MakeDivider(win, -116)
+
+    -------------------------------------------------------------------------
+    -- Tab content panels
+    -- Each panel is a Frame anchored to win. Widgets within each panel use
+    -- y-coordinates relative to win itself (not the panel), since the panel
+    -- is fullscreen-within-win. Showing/hiding the panel hides/shows all
+    -- widgets parented to it.
+    -------------------------------------------------------------------------
+    local function MakePanel()
+        local p = CreateFrame("Frame", nil, win)
+        p:SetPoint("TOPLEFT",     win, "TOPLEFT",     0, 0)
+        p:SetPoint("BOTTOMRIGHT", win, "BOTTOMRIGHT", 0, 0)
+        p:Hide()
+        return p
+    end
+    for i = 1, #tabDefs do panels[i] = MakePanel() end
+
+    local pGeneral   = panels[1]
+    local pSell      = panels[2]
+    local pActions   = panels[3]
+    local pWhitelist = panels[4]
+
+    -------------------------------------------------------------------------
+    -- Tab 1: GENERAL
+    -------------------------------------------------------------------------
     -- Row: Enable / Force Sell
-    MakeDivider(win, -80)
-    local enableBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    enableBtn:SetPoint("TOPLEFT", 18, -92)
-    enableBtn:SetWidth(140); enableBtn:SetHeight(26)
-    enableBtn:SetText(EAL_DB.enabled and "Disable" or "Enable")
+    local enableBtn = CreateFrame("Button", nil, pGeneral, "GameMenuButtonTemplate")
+    enableBtn:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -128)
+    enableBtn:SetWidth(150); enableBtn:SetHeight(26)
+    enableBtn:SetText(EAL_DB.enabled and L["Disable"] or L["Enable"])
     g_enableBtn = enableBtn
     enableBtn:SetScript("OnClick", function(self)
         EAL_DB.enabled = not EAL_DB.enabled
@@ -1325,38 +1388,79 @@ local function EAL_BuildGUI()
         end
         EAL_UpdateStatus()
     end)
-    MakeTooltipButton(enableBtn, "|cffff9900Enable / Disable|r", {
+    MakeTooltipButton(enableBtn, "|cffff9900" .. L["Enable"] .. " / " .. L["Disable"] .. "|r", {
         "|cffaaaaaaStart or stop the auto loot+sell cycle.|r",
         "|cffaaaaaaWhen enabled, your loot companion is|r",
         "|cffaaaaaasummoned and bags are monitored.|r",
     })
 
-    local sellNowBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    sellNowBtn:SetPoint("TOPLEFT", 176, -92)
-    sellNowBtn:SetWidth(146); sellNowBtn:SetHeight(26)
-    sellNowBtn:SetText("Force Sell Now")
+    local sellNowBtn = CreateFrame("Button", nil, pGeneral, "GameMenuButtonTemplate")
+    sellNowBtn:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 184, -128)
+    sellNowBtn:SetWidth(158); sellNowBtn:SetHeight(26)
+    sellNowBtn:SetText(L["Force Sell Now"])
     sellNowBtn:SetScript("OnClick", function() StartSellCycle() end)
-    MakeTooltipButton(sellNowBtn, "|cffff9900Force Sell Now|r", {
+    MakeTooltipButton(sellNowBtn, "|cffff9900" .. L["Force Sell Now"] .. "|r", {
         "|cffaaaaaaSummon the vendor companion and begin|r",
         "|cffaaaaaaa sell cycle even if bags aren't full.|r",
     })
 
-    -- Vendor button row
-    MakeDivider(win, -126)
-    local vendorHint = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    vendorHint:SetPoint("TOPLEFT", 18, -138)
-    vendorHint:SetWidth(210)
-    vendorHint:SetJustifyH("LEFT")
+    -- Fast Mode + Sound on a row
+    local fastModeCb = CreateFrame("CheckButton", nil, pGeneral, "UICheckButtonTemplate")
+    fastModeCb:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -162)
+    fastModeCb:SetWidth(24); fastModeCb:SetHeight(24)
+    fastModeCb:SetChecked(EAL_DB.fastMode)
+    local fastModeLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    fastModeLbl:SetPoint("LEFT", fastModeCb, "RIGHT", 1, 0)
+    fastModeLbl:SetText("|cffff4444" .. L["Fast Mode"] .. "|r")
+    fastModeCb:SetScript("OnClick", function(self)
+        EAL_DB.fastMode = self:GetChecked() and true or false
+    end)
+    fastModeCb:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffff4444" .. L["Fast Mode"] .. "|r")
+        GameTooltip:AddLine("|cffff9900Warning: may cause disconnects on|r")
+        GameTooltip:AddLine("|cffff9900lower-end hardware.|r")
+        GameTooltip:AddLine("|cffaaaaaaDoubles items sold per batch and|r")
+        GameTooltip:AddLine("|cffaaaaaahalves the delay between batches.|r")
+        GameTooltip:Show()
+    end)
+    fastModeCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    MakeCheckbox(pGeneral, L["Sound"], 200, -162,
+        function() return EAL_DB.soundEnabled end,
+        function(v) EAL_DB.soundEnabled = v end,
+        {
+            "|cffffd700" .. L["Sound"] .. "|r",
+            "|cffaaaaaaPlays sounds on sell completion and|r",
+            "|cffaaaaaawhen the vendor companion is ready.|r",
+        })
+
+    -- Sell-at-any-vendor
+    MakeCheckbox(pGeneral, "|cffffaa00Sell at any vendor|r (not just summoned)", 18, -190,
+        function() return EAL_DB.sellOnAnyVendor end,
+        function(v) EAL_DB.sellOnAnyVendor = v end,
+        {
+            "|cffffd700Sell at any vendor|r",
+            "|cffaaaaaaWhen OFF (default): only auto-sells when|r",
+            "|cffaaaaaathe addon itself triggered the sell cycle.|r",
+            "|cffaaaaaaWhen ON: auto-sells at any vendor you open|r",
+            "|cffaaaaaa(repair vendors, quest vendors, etc).|r",
+        })
+
+    -- Vendor-button hint + show/hide toggle
+    MakeDivider(pGeneral, -222)
+    local vendorHint = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    vendorHint:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -234)
+    vendorHint:SetWidth(220); vendorHint:SetJustifyH("LEFT")
     vendorHint:SetText("|cffaaaaaaClick vendor button, then Interact key to sell|r")
 
     local function UpdateVendorToggleBtn(btn)
-        if EAL_DB.vendorBtnShown then btn:SetText("Hide Vendor Btn")
-        else                          btn:SetText("Show Vendor Btn") end
+        if EAL_DB.vendorBtnShown then btn:SetText(L["Hide Vendor Btn"])
+        else                          btn:SetText(L["Show Vendor Btn"]) end
     end
-
-    local vendorToggle = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    vendorToggle:SetPoint("TOPLEFT", 232, -134)
-    vendorToggle:SetWidth(90); vendorToggle:SetHeight(22)
+    local vendorToggle = CreateFrame("Button", nil, pGeneral, "GameMenuButtonTemplate")
+    vendorToggle:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 242, -230)
+    vendorToggle:SetWidth(100); vendorToggle:SetHeight(22)
     UpdateVendorToggleBtn(vendorToggle)
     vendorToggle:SetScript("OnClick", function(self)
         EAL_DB.vendorBtnShown = not EAL_DB.vendorBtnShown
@@ -1367,40 +1471,50 @@ local function EAL_BuildGUI()
     end)
     g_vendorBtnToggle = vendorToggle
 
-    -- Companion names row
-    MakeDivider(win, -162)
-    MakeHeader(win, "COMPANION NAMES", 18, -172)
+    -- Minimap button toggle
+    MakeCheckbox(pGeneral, "Show minimap button", 18, -266,
+        function() return EAL_DB.showMinimapButton end,
+        function(v)
+            EAL_DB.showMinimapButton = v
+            if UpdateMinimapButton then UpdateMinimapButton() end
+        end,
+        {
+            "|cffffd700Minimap button|r",
+            "|cffaaaaaaShow the AutoLoot minimap button.|r",
+            "|cffaaaaaaDrag to reposition; left-click opens|r",
+            "|cffaaaaaasettings, right-click toggles enable.|r",
+        })
 
-    -- Explicit dark panel behind the two input rows so the inputs' native
-    -- dark bounding box stays readable regardless of the parchment gradient.
-    local companionPanel = win:CreateTexture(nil, "ARTWORK")
-    companionPanel:SetTexture("Interface\\Buttons\\WHITE8X8")
-    companionPanel:SetVertexColor(0, 0, 0, 0.55)
-    companionPanel:SetPoint("TOPLEFT",     win, "TOPLEFT",  14, -186)
-    companionPanel:SetPoint("BOTTOMRIGHT", win, "TOPLEFT", 326, -236)
+    -------------------------------------------------------------------------
+    -- Tab 2: SELL
+    -------------------------------------------------------------------------
+    MakeHeader(pSell, L["COMPANION NAMES"], 18, -124)
 
-    -- Thin gold hairline border around the panel (WotLK inset look)
-    local function PanelEdge(tlx, tly, brx, bry)
-        local e = win:CreateTexture(nil, "ARTWORK", nil, 1)
+    -- Dark backing panel behind input rows for contrast
+    local cPanel = pSell:CreateTexture(nil, "ARTWORK")
+    cPanel:SetTexture("Interface\\Buttons\\WHITE8X8")
+    cPanel:SetVertexColor(0, 0, 0, 0.55)
+    cPanel:SetPoint("TOPLEFT",     pSell, "TOPLEFT",  14, -140)
+    cPanel:SetPoint("BOTTOMRIGHT", pSell, "TOPLEFT", 346, -190)
+    local function PanelEdge(parent, tlx, tly, brx, bry)
+        local e = parent:CreateTexture(nil, "ARTWORK", nil, 1)
         e:SetTexture("Interface\\Buttons\\WHITE8X8")
         e:SetVertexColor(0.55, 0.42, 0.18, 0.85)
-        e:SetPoint("TOPLEFT",     win, "TOPLEFT", tlx, tly)
-        e:SetPoint("BOTTOMRIGHT", win, "TOPLEFT", brx, bry)
-        return e
+        e:SetPoint("TOPLEFT",     parent, "TOPLEFT", tlx, tly)
+        e:SetPoint("BOTTOMRIGHT", parent, "TOPLEFT", brx, bry)
     end
-    PanelEdge( 14, -186, 326, -187)  -- top
-    PanelEdge( 14, -235, 326, -236)  -- bottom
-    PanelEdge( 14, -186,  15, -236)  -- left
-    PanelEdge(325, -186, 326, -236)  -- right
+    PanelEdge(pSell,  14, -140, 346, -141)
+    PanelEdge(pSell,  14, -189, 346, -190)
+    PanelEdge(pSell,  14, -140,  15, -190)
+    PanelEdge(pSell, 345, -140, 346, -190)
 
-    local lootLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lootLabel:SetPoint("TOPLEFT", 18, -190)
-    lootLabel:SetText("Loot:")
-    local lootInput = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
-    lootInput:SetPoint("TOPLEFT", 72, -188)
-    lootInput:SetWidth(250); lootInput:SetHeight(20)
-    lootInput:SetAutoFocus(false)
-    lootInput:SetMaxLetters(64)
+    local lootLabel = pSell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    lootLabel:SetPoint("TOPLEFT", pSell, "TOPLEFT", 18, -146)
+    lootLabel:SetText(L["Loot:"])
+    local lootInput = CreateFrame("EditBox", nil, pSell, "InputBoxTemplate")
+    lootInput:SetPoint("TOPLEFT", pSell, "TOPLEFT", 72, -144)
+    lootInput:SetWidth(270); lootInput:SetHeight(20)
+    lootInput:SetAutoFocus(false); lootInput:SetMaxLetters(64)
     lootInput:SetText(EAL_DB.lootCompanion or "")
     lootInput:SetScript("OnEnterPressed", function(self)
         local txt = self:GetText():match("^%s*(.-)%s*$")
@@ -1409,14 +1523,13 @@ local function EAL_BuildGUI()
         Print("Loot companion set to: |cffffff00" .. (EAL_DB.lootCompanion or "?") .. "|r")
     end)
 
-    local vendLabel = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    vendLabel:SetPoint("TOPLEFT", 18, -214)
-    vendLabel:SetText("Vendor:")
-    local vendInput = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
-    vendInput:SetPoint("TOPLEFT", 72, -212)
-    vendInput:SetWidth(250); vendInput:SetHeight(20)
-    vendInput:SetAutoFocus(false)
-    vendInput:SetMaxLetters(64)
+    local vendLabel = pSell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    vendLabel:SetPoint("TOPLEFT", pSell, "TOPLEFT", 18, -170)
+    vendLabel:SetText(L["Vendor:"])
+    local vendInput = CreateFrame("EditBox", nil, pSell, "InputBoxTemplate")
+    vendInput:SetPoint("TOPLEFT", pSell, "TOPLEFT", 72, -168)
+    vendInput:SetWidth(270); vendInput:SetHeight(20)
+    vendInput:SetAutoFocus(false); vendInput:SetMaxLetters(64)
     vendInput:SetText(EAL_DB.vendorCompanion or "")
     vendInput:SetScript("OnEnterPressed", function(self)
         local txt = self:GetText():match("^%s*(.-)%s*$")
@@ -1430,58 +1543,41 @@ local function EAL_BuildGUI()
         Print("Vendor companion set to: |cffffff00" .. (EAL_DB.vendorCompanion or "?") .. "|r")
     end)
 
-    -- Quality toggles
-    MakeDivider(win, -240)
-    MakeHeader(win, "SELL QUALITY", 18, -250)
+    -- Sell quality
+    MakeDivider(pSell, -200)
+    MakeHeader(pSell, L["SELL QUALITY"], 18, -210)
 
     local qualityDefs = {
-        { Q_GREY,     "sellGrey",      18,  -270 },
-        { Q_WHITE,    "sellWhite",    110,  -270 },
-        { Q_UNCOMMON, "sellUncommon", 210,  -270 },
-        { Q_RARE,     "sellRare",      18,  -294 },
-        { Q_EPIC,     "sellEpic",     110,  -294 },
+        { Q_GREY,     "sellGrey",      18,  -230 },
+        { Q_WHITE,    "sellWhite",    120,  -230 },
+        { Q_UNCOMMON, "sellUncommon", 230,  -230 },
+        { Q_RARE,     "sellRare",      18,  -254 },
+        { Q_EPIC,     "sellEpic",     120,  -254 },
     }
     for _, def in ipairs(qualityDefs) do
         local qIdx, dbKey, cx, cy = def[1], def[2], def[3], def[4]
         local label = "|cff" .. QUALITY_HEX[qIdx] .. QUALITY_LABEL[qIdx] .. "|r"
-        MakeCheckbox(win, label, cx, cy,
+        MakeCheckbox(pSell, label, cx, cy,
             function() return EAL_DB[dbKey] end,
             function(v) EAL_DB[dbKey] = v end)
     end
 
-    -- Safety toggles row
-    MakeDivider(win, -312)
-    MakeHeader(win, "BEHAVIOR", 18, -322)
-
-    MakeCheckbox(win, "|cffffaa00Sell at any vendor|r (not just summoned)", 18, -340,
-        function() return EAL_DB.sellOnAnyVendor end,
-        function(v) EAL_DB.sellOnAnyVendor = v end,
-        {
-            "|cffffd700Sell at any vendor|r",
-            "|cffaaaaaaWhen OFF (default): only auto-sells when|r",
-            "|cffaaaaaathe addon itself triggered the sell cycle.|r",
-            "|cffaaaaaaWhen ON: auto-sells at any vendor you open|r",
-            "|cffaaaaaa(repair vendors, quest vendors, etc).|r",
-        })
-
-    -- Auto-delete unsellable -- master toggle. Opt-in via confirmation popup.
-    -- The four sub-checkboxes below it (Common / Uncommon / Rare / Epic)
-    -- pick which quality tiers the cycle actually touches.
+    -- Auto-delete unsellable (master + 4 quality sub-toggles)
+    MakeDivider(pSell, -282)
     EAL_DB.autoDeleteUnsellable = EAL_DB.autoDeleteUnsellable or {
         enabled = false, common = false, uncommon = false,
         rare = false, epic = false,
     }
-
-    local autoDelCb = CreateFrame("CheckButton", nil, win, "UICheckButtonTemplate")
-    autoDelCb:SetPoint("TOPLEFT", 18, -358)
+    local autoDelCb = CreateFrame("CheckButton", nil, pSell, "UICheckButtonTemplate")
+    autoDelCb:SetPoint("TOPLEFT", pSell, "TOPLEFT", 18, -294)
     autoDelCb:SetWidth(24); autoDelCb:SetHeight(24)
     autoDelCb:SetChecked(EAL_DB.autoDeleteUnsellable.enabled)
-    local autoDelLbl = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local autoDelLbl = pSell:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     autoDelLbl:SetPoint("LEFT", autoDelCb, "RIGHT", 1, 0)
-    autoDelLbl:SetText("|cffff4444Auto-delete unsellable|r")
+    autoDelLbl:SetText("|cffff4444" .. L["Auto-delete unsellable"] .. "|r")
     autoDelCb:SetScript("OnClick", function(self)
         if self:GetChecked() then
-            self:SetChecked(false) -- require confirmation before actually enabling
+            self:SetChecked(false)
             StaticPopup_Show("AUTOLOOT_CONFIRM_AUTODELETE_RARES")
         else
             EAL_DB.autoDeleteUnsellable.enabled = false
@@ -1494,38 +1590,24 @@ local function EAL_BuildGUI()
         GameTooltip:AddLine("|cffff9900WARNING: silently deletes items with|r")
         GameTooltip:AddLine("|cffff9900no vendor price every few seconds.|r")
         GameTooltip:AddLine("|cffaaaaaaThe ticks below choose which quality|r")
-        GameTooltip:AddLine("|cffaaaaaatiers are affected. Some quest items|r")
-        GameTooltip:AddLine("|cffaaaaaaand tokens have no vendor price and|r")
-        GameTooltip:AddLine("|cffaaaaaawill be destroyed.  OFF by default.|r")
+        GameTooltip:AddLine("|cffaaaaaatiers are affected. OFF by default.|r")
         GameTooltip:Show()
     end)
     autoDelCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
     g_autoDelCb = autoDelCb
 
-    MakeCheckbox(win, "Sound", 210, -358,
-        function() return EAL_DB.soundEnabled end,
-        function(v) EAL_DB.soundEnabled = v end,
-        {
-            "|cffffd700Sound|r",
-            "|cffaaaaaaPlays sounds on sell completion and|r",
-            "|cffaaaaaawhen the vendor companion is ready.|r",
-        })
-
-    -- Per-quality sub-checkboxes for auto-delete-unsellable.
-    -- Grey/Poor is intentionally absent: grey items always have a vendor
-    -- price by design and would never match the "no sell price" filter.
     local subDefs = {
-        { key = "common",   text = "|cffffffffCommon|r",   x = 30,  y = -380 },
-        { key = "uncommon", text = "|cff1eff00Uncommon|r", x = 130, y = -380 },
-        { key = "rare",     text = "|cff0070ddRare|r",     x = 240, y = -380 },
-        { key = "epic",     text = "|cffa335eeEpic|r",     x = 30,  y = -404 },
+        { key = "common",   text = "|cffffffff" .. L["Common"]   .. "|r", x = 32,  y = -318 },
+        { key = "uncommon", text = "|cff1eff00" .. L["Uncommon"] .. "|r", x = 132, y = -318 },
+        { key = "rare",     text = "|cff0070dd" .. L["Rare"]     .. "|r", x = 244, y = -318 },
+        { key = "epic",     text = "|cffa335ee" .. L["Epic"]     .. "|r", x = 32,  y = -342 },
     }
     for _, def in ipairs(subDefs) do
-        local cb = CreateFrame("CheckButton", nil, win, "UICheckButtonTemplate")
-        cb:SetPoint("TOPLEFT", def.x, def.y)
+        local cb = CreateFrame("CheckButton", nil, pSell, "UICheckButtonTemplate")
+        cb:SetPoint("TOPLEFT", pSell, "TOPLEFT", def.x, def.y)
         cb:SetWidth(22); cb:SetHeight(22)
         cb:SetChecked(EAL_DB.autoDeleteUnsellable[def.key])
-        local lbl = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        local lbl = pSell:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("LEFT", cb, "RIGHT", 1, 0)
         lbl:SetText(def.text)
         cb:SetScript("OnClick", function(self)
@@ -1535,25 +1617,25 @@ local function EAL_BuildGUI()
         cb:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:AddLine("|cffff4444Delete unsellable " .. capturedKey .. " items|r")
-            GameTooltip:AddLine("|cffaaaaaaWhen the master toggle is on, items of|r")
-            GameTooltip:AddLine("|cffaaaaaathis quality with no vendor price are|r")
-            GameTooltip:AddLine("|cffaaaaaadeleted every few seconds during the|r")
-            GameTooltip:AddLine("|cffaaaaaaloot cycle.|r")
+            GameTooltip:AddLine("|cffaaaaaaWhen master is on, items of this quality|r")
+            GameTooltip:AddLine("|cffaaaaaawith no vendor price are deleted.|r")
             GameTooltip:Show()
         end)
         cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    -- Quick-sell by item level row (server-specific helper:
-    -- on Ebonhold and similar servers, gear >= iLvl 200 has crafting /
-    -- upgrade uses while gear <=199 is safe junk).
-    MakeDivider(win, -430)
-    local quickSellBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    quickSellBtn:SetPoint("TOPLEFT", 18, -440)
-    quickSellBtn:SetWidth(246); quickSellBtn:SetHeight(22)
+    -------------------------------------------------------------------------
+    -- Tab 3: ACTIONS
+    -------------------------------------------------------------------------
+    MakeHeader(pActions, L["QUICK ACTIONS"], 18, -124)
+
+    -- Quick-sell row
+    local quickSellBtn = CreateFrame("Button", nil, pActions, "GameMenuButtonTemplate")
+    quickSellBtn:SetPoint("TOPLEFT", pActions, "TOPLEFT", 18, -148)
+    quickSellBtn:SetWidth(266); quickSellBtn:SetHeight(22)
     local function UpdateQuickSellBtnText()
-        quickSellBtn:SetText("Sell gear at iLvl " ..
-            (EAL_DB.ilvlSellThreshold or 199) .. " or below")
+        quickSellBtn:SetText(string.format(L["Sell gear at iLvl %d or below"],
+            EAL_DB.ilvlSellThreshold or 199))
     end
     UpdateQuickSellBtnText()
     quickSellBtn:SetScript("OnClick", EAL_PromptSellLowILvl)
@@ -1562,21 +1644,17 @@ local function EAL_BuildGUI()
         "|cffaaaaaathe configured item level and sells it at|r",
         "|cffaaaaaathe currently-open vendor.|r",
         " ",
-        "|cffaaaaaaFilters: equipment only (never trade goods),|r",
-        "|cffaaaaaamust have a vendor price (never quest items),|r",
+        "|cffaaaaaaFilters: equipment only, vendor price > 0,|r",
         "|cffaaaaaaskips whitelisted items.|r",
         " ",
-        "|cffff9900Open a vendor before clicking. Confirmation|r",
-        "|cffff9900popup shows count + estimated value.|r",
+        "|cffff9900Open a vendor before clicking.|r",
     })
 
-    local ilvlInput = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
-    ilvlInput:SetPoint("TOPLEFT", 280, -438)
+    local ilvlInput = CreateFrame("EditBox", nil, pActions, "InputBoxTemplate")
+    ilvlInput:SetPoint("TOPLEFT", pActions, "TOPLEFT", 300, -146)
     ilvlInput:SetWidth(42); ilvlInput:SetHeight(20)
-    ilvlInput:SetAutoFocus(false)
-    ilvlInput:SetMaxLetters(4)
-    ilvlInput:SetNumeric(true)
-    ilvlInput:SetJustifyH("CENTER")
+    ilvlInput:SetAutoFocus(false); ilvlInput:SetMaxLetters(4)
+    ilvlInput:SetNumeric(true); ilvlInput:SetJustifyH("CENTER")
     ilvlInput:SetText(tostring(EAL_DB.ilvlSellThreshold or 199))
     ilvlInput:SetScript("OnEnterPressed", function(self)
         local n = tonumber(self:GetText()) or 199
@@ -1589,25 +1667,15 @@ local function EAL_BuildGUI()
         Print("Quick-sell threshold set to iLvl <= |cffffff00" .. n .. "|r.")
     end)
     ilvlInput:SetScript("OnEscapePressed", function(self)
-        self:SetText(tostring(EAL_DB.ilvlSellThreshold or 199))
-        self:ClearFocus()
+        self:SetText(tostring(EAL_DB.ilvlSellThreshold or 199)); self:ClearFocus()
     end)
-    ilvlInput:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-        GameTooltip:AddLine("|cffffd700iLvl threshold|r")
-        GameTooltip:AddLine("|cffaaaaaaGear at or below this item level is sold|r")
-        GameTooltip:AddLine("|cffaaaaaawhen you click the quick-sell button.|r")
-        GameTooltip:AddLine("|cffaaaaaaPress Enter to save.|r")
-        GameTooltip:Show()
-    end)
-    ilvlInput:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-    -- Savage PvP deletion (confirmation required)
-    MakeDivider(win, -460)
-    local savageBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    savageBtn:SetPoint("TOPLEFT", 18, -470)
-    savageBtn:SetWidth(304); savageBtn:SetHeight(22)
-    savageBtn:SetText("Delete All Savage PvP Gear from Bags")
+    -- Savage delete
+    MakeDivider(pActions, -184)
+    local savageBtn = CreateFrame("Button", nil, pActions, "GameMenuButtonTemplate")
+    savageBtn:SetPoint("TOPLEFT", pActions, "TOPLEFT", 18, -196)
+    savageBtn:SetWidth(324); savageBtn:SetHeight(22)
+    savageBtn:SetText(L["Delete All Savage PvP Gear from Bags"])
     savageBtn:GetNormalFontObject():SetTextColor(1, 0.35, 0.35)
     savageBtn:SetScript("OnClick", function()
         StaticPopup_Show("AUTOLOOT_CONFIRM_DELETE_SAVAGE")
@@ -1618,63 +1686,57 @@ local function EAL_BuildGUI()
         "|cffff9900Confirmation required. Irreversible.|r",
     })
 
-    -- Whitelist section
-    MakeDivider(win, -500)
-    MakeHeader(win, "ITEM WHITELIST  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -510)
+    -------------------------------------------------------------------------
+    -- Tab 4: WHITELIST
+    -------------------------------------------------------------------------
+    MakeHeader(pWhitelist, L["ITEM WHITELIST"] ..
+               "  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -124)
 
-    local inputBox = CreateFrame("EditBox", "EAL_BlacklistInput", win, "InputBoxTemplate")
-    inputBox:SetPoint("TOPLEFT", 18, -532)
-    inputBox:SetWidth(184); inputBox:SetHeight(20)
-    inputBox:SetAutoFocus(false)
-    inputBox:SetMaxLetters(64)
+    local inputBox = CreateFrame("EditBox", "EAL_BlacklistInput", pWhitelist, "InputBoxTemplate")
+    inputBox:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 18, -146)
+    inputBox:SetWidth(204); inputBox:SetHeight(20)
+    inputBox:SetAutoFocus(false); inputBox:SetMaxLetters(64)
 
     local function AddBlacklistEntry(list)
         local text = inputBox:GetText():match("^%s*(.-)%s*$")
         if text == "" then return end
         for _, v in ipairs(list) do
             if v:lower() == text:lower() then
-                inputBox:SetText("")
-                return
+                inputBox:SetText(""); return
             end
         end
-        table.insert(list, text)
-        inputBox:SetText("")
+        table.insert(list, text); inputBox:SetText("")
         EAL_RefreshBlacklist()
     end
-
     inputBox:SetScript("OnEnterPressed", function(self)
-        AddBlacklistEntry(EAL_DB.blacklist)
-        self:ClearFocus()
+        AddBlacklistEntry(EAL_DB.blacklist); self:ClearFocus()
     end)
 
-    local addAcctBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addAcctBtn:SetPoint("TOPLEFT", 208, -530)
-    addAcctBtn:SetWidth(56); addAcctBtn:SetHeight(22)
-    addAcctBtn:SetText("+Acct")
+    local addAcctBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    addAcctBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 228, -144)
+    addAcctBtn:SetWidth(56); addAcctBtn:SetHeight(22); addAcctBtn:SetText("+Acct")
     addAcctBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_DB.blacklist) end)
     MakeTooltipButton(addAcctBtn, "|cffb9b9b9Add to Account Whitelist|r", {
         "|cffaaaaaaShared across all characters.|r",
     })
 
-    local addCharBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    addCharBtn:SetPoint("TOPLEFT", 266, -530)
-    addCharBtn:SetWidth(56); addCharBtn:SetHeight(22)
-    addCharBtn:SetText("+Char")
+    local addCharBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    addCharBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 286, -144)
+    addCharBtn:SetWidth(56); addCharBtn:SetHeight(22); addCharBtn:SetText("+Char")
     addCharBtn:SetScript("OnClick", function() AddBlacklistEntry(EAL_CDB.blacklist) end)
     MakeTooltipButton(addCharBtn, "|cff87ceebAdd to Character Whitelist|r", {
         "|cffaaaaaaApplies only to this character.|r",
     })
 
-    local tomeBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    tomeBtn:SetPoint("TOPLEFT", 18, -556)
-    tomeBtn:SetWidth(244); tomeBtn:SetHeight(22)
-    tomeBtn:SetText('Whitelist all "Tome of Echo:" in bags')
+    local tomeBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    tomeBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 18, -172)
+    tomeBtn:SetWidth(264); tomeBtn:SetHeight(22)
+    tomeBtn:SetText(L["Whitelist all 'Tome of Echo:' in bags"])
     tomeBtn:SetScript("OnClick", EAL_WhitelistTomes)
 
-    local resetBtn = CreateFrame("Button", nil, win, "GameMenuButtonTemplate")
-    resetBtn:SetPoint("TOPLEFT", 266, -556)
-    resetBtn:SetWidth(56); resetBtn:SetHeight(22)
-    resetBtn:SetText("Clear")
+    local resetBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    resetBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 286, -172)
+    resetBtn:SetWidth(56); resetBtn:SetHeight(22); resetBtn:SetText(L["Clear"])
     resetBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
     resetBtn:SetScript("OnClick", function()
         StaticPopup_Show("AUTOLOOT_CONFIRM_RESET_WHITELIST")
@@ -1686,9 +1748,9 @@ local function EAL_BuildGUI()
 
     -- Scrollable whitelist
     local TRACK_W = 8
-    local listBg = CreateFrame("Frame", nil, win)
-    listBg:SetPoint("TOPLEFT", 14, -584)
-    listBg:SetWidth(312); listBg:SetHeight(MAX_ROWS * ROW_HEIGHT + 8)
+    local listBg = CreateFrame("Frame", nil, pWhitelist)
+    listBg:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 14, -202)
+    listBg:SetWidth(332); listBg:SetHeight(MAX_ROWS * ROW_HEIGHT + 8)
     listBg:SetBackdrop({
         bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
         edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -1702,7 +1764,7 @@ local function EAL_BuildGUI()
         EAL_RefreshBlacklist()
     end)
 
-    local rowW = 312 - 8 - TRACK_W
+    local rowW = 332 - 8 - TRACK_W
     for i = 1, MAX_ROWS do
         local row = CreateFrame("Frame", nil, listBg)
         row:SetWidth(rowW); row:SetHeight(ROW_HEIGHT)
@@ -1715,20 +1777,16 @@ local function EAL_BuildGUI()
 
         local lbl = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         lbl:SetPoint("LEFT", 6, 0)
-        lbl:SetWidth(rowW - 66)
-        lbl:SetJustifyH("LEFT")
-        lbl:SetWordWrap(false)
+        lbl:SetWidth(rowW - 66); lbl:SetJustifyH("LEFT"); lbl:SetWordWrap(false)
 
         local removeBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
         removeBtn:SetPoint("RIGHT", -2, 0)
         removeBtn:SetWidth(54); removeBtn:SetHeight(18)
-        removeBtn:SetText("Remove")
+        removeBtn:SetText(L["Remove"])
         removeBtn:GetNormalFontObject():SetTextColor(1, 0.4, 0.4)
 
-        row.label     = lbl
-        row.removeBtn = removeBtn
-        row:Hide()
-        g_blacklistRows[i] = row
+        row.label = lbl; row.removeBtn = removeBtn
+        row:Hide(); g_blacklistRows[i] = row
     end
 
     local trackH = MAX_ROWS * ROW_HEIGHT
@@ -1736,19 +1794,21 @@ local function EAL_BuildGUI()
     track:SetWidth(TRACK_W); track:SetHeight(trackH)
     track:SetPoint("TOPRIGHT", -4, -4)
     local trackTex = track:CreateTexture(nil, "BACKGROUND")
-    trackTex:SetAllPoints()
-    trackTex:SetTexture(0.08, 0.08, 0.08, 0.9)
+    trackTex:SetAllPoints(); trackTex:SetTexture(0.08, 0.08, 0.08, 0.9)
     local thumb = track:CreateTexture(nil, "ARTWORK")
-    thumb:SetWidth(TRACK_W - 2)
-    thumb:SetPoint("TOP", track, "TOP", 0, 0)
-    thumb:SetTexture(0.55, 0.45, 0.25, 0.9)
-    thumb:Hide()
+    thumb:SetWidth(TRACK_W - 2); thumb:SetPoint("TOP", track, "TOP", 0, 0)
+    thumb:SetTexture(0.55, 0.45, 0.25, 0.9); thumb:Hide()
     g_scrollThumb = thumb
 
-    -- Bottom hint
+    -- Bottom hint (always visible across tabs)
     local hint = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("BOTTOM", 0, 14)
     hint:SetText("|cffaaaaaa/eal toggle | sell | reset   -   minimap button, right-click to enable|r")
+
+    -- Restore last-selected tab, or default to General
+    local startTab = tonumber(EAL_DB.lastTab) or 1
+    if not panels[startTab] then startTab = 1 end
+    ShowTab(startTab)
 
     EAL_UpdateStatus()
     EAL_RefreshBlacklist()

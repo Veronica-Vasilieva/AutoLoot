@@ -1,5 +1,23 @@
 # Changelog — AutoLoot
 
+## [4.3.0] - 2026-04-24
+
+Foundation release for the "wider world" expansion. No user-facing feature changes; everything below is groundwork for the bank, mail, guild bank, and AH-helper features arriving in v4.4.0+.
+
+### Changed
+- **Settings window is now tabbed.** Four tabs: **General** (enable/disable, Force Sell, Fast Mode, Sound, sell-at-any-vendor, vendor button toggle, minimap toggle), **Sell** (companion names, sell quality, auto-delete unsellable), **Actions** (quick-sell by iLvl, Savage delete), **Whitelist** (input + scrollable list). The last-selected tab is remembered across sessions in `EAL_DB.lastTab`. Window shrank from 340×820 to 360×560.
+- **Header area is now persistent.** Status (`IDLE` / `LOOTING` / `SELLING`), free slot count, and lifetime gold are visible no matter which tab is active.
+- **About info moved to a "?" badge** in the top-right corner. Hover for version / author / slash commands / license.
+- **Removed the parchment gradient overlay.** Tabs provide visual structure; the gradient was no longer carrying its weight and was causing input-contrast issues. The dark backdrop + gold L-bracket corners + per-tab dividers carry the WotLK look on their own.
+
+### Added
+- **Localisation framework.** New `Locale.lua` defines `AutoLoot_L` (a metatable that falls back to key-as-value when no translation exists), with stub files for `deDE`, `frFR`, `ruRU`, `esES` / `esMX`, `zhTW` / `zhCN`, and `koKR`. Untranslated strings transparently render as English. All major user-visible strings (tab labels, button text, headers, quality names) are wrapped in `L["..."]`; tooltip lines remain unwrapped pending translation contributions.
+- New SavedVariables key: `lastTab`. Migrated transparently (`MergeDefaults` adds the default `1` for existing saves).
+
+### Internal
+- No schema bump (still v3). `MergeDefaults` handles the new `lastTab` field automatically.
+- The single-pane `EAL_BuildGUI` function was rewritten from scratch around a header/tab/content layout. All widget logic is preserved verbatim; only the parent frame and y-coordinate of each widget changed.
+
 ## [4.2.0] - 2026-04-24
 
 ### Changed
