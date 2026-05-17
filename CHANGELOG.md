@@ -1,5 +1,26 @@
 # Changelog — AutoLoot
 
+## [4.6.0] - 2026-05-17
+
+### Added — new Mail tab
+- **5th tab in the settings window: Mail.** Holds the per-character auto-collect toggle, two sub-toggles (money / items), an auto-delete-read-mail option, and manual `Collect Now` / `Clean Read Mail` buttons.
+- **Auto-collect on `MAIL_SHOW`.** Per-character toggle. When you open your mailbox, AutoLoot walks the inbox and takes money + item attachments per your sub-toggle settings. Throttled at ~0.6s per action to stay under server rate limits.
+- **COD safety.** Mail with a non-zero `CODAmount` is **always** skipped in auto-collect. The addon will never accidentally pay a COD on your behalf. Skipped count is included in the chat summary.
+- **Auto-delete read empty mail** (per-char). Optional cleanup pass after the collect cycle: iterates the inbox backwards and deletes any mail that is read, has no money, no items, and no COD owed.
+- **Slash commands:** `/eal mail` (alias `/eal collect`) forces a collect pass; `/eal cleanmail` deletes read empty mail.
+
+### Changed — tab restructure
+- **Actions tab removed.** It only had one row (the quick-sell-by-iLvl button + threshold). That row moved to the **Sell** tab where it semantically belongs (at the bottom, below the auto-delete sub-grid). Net effect: same UI, fewer empty tabs, room for the new Mail tab inside the 360-wide window.
+- **New tab order:** `General | Sell | Whitelist | Bank | Mail`.
+- **iLvl threshold input** now uses the v4.4.4 `MakeNumericInput` helper instead of `InputBoxTemplate`, matching the General-tab inputs. (No visible change; cleanups the parent-visibility chain.)
+
+### Schema migration (v3 → v4)
+- One-time `lastTab` remap on first load:
+  - Old `3` (Actions) → `1` (General — Actions removed)
+  - Old `4` (Whitelist) → `3` (Whitelist shifted up)
+  - Old `5` (Bank) → `4` (Bank shifted up)
+- Existing per-character SavedVariables gain `mailAutoCollect = false`, `mailCollectMoney = true`, `mailCollectItems = true`, `mailAutoDeleteRead = false` on first load. Whitelist, stash list, gold totals, companion names, thresholds, and minimap position are preserved.
+
 ## [4.5.1] - 2026-05-17
 
 ### Removed

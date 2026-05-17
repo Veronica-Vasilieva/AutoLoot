@@ -37,6 +37,8 @@ L["About"]                 = "About"
 L["Bank"]                  = "Bank"
 L["BANK SETTINGS"]         = "BANK SETTINGS"
 L["STASH LIST"]            = "STASH LIST"
+L["Mail"]                  = "Mail"
+L["MAIL SETTINGS"]         = "MAIL SETTINGS"
 
 -- Status / labels
 L["by"]                    = "by"

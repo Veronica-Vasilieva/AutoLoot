@@ -19,11 +19,11 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.5.1"
+local ADDON_VERSION = "4.6.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
-local CURRENT_SCHEMA = 3
+local CURRENT_SCHEMA = 4
 
 -- Provenance globals. Used by external diagnostic tools and crash
 -- reporters to identify the addon and route bug reports upstream.
@@ -153,6 +153,13 @@ local CHAR_DEFAULTS = {
     blacklist           = {},     -- per-character whitelist
     stashList           = {},     -- per-character stash list (Bank tab)
     autoDepositToBank   = false,  -- auto-deposit stash items when bank opens
+
+    -- Mail tab (per-character).  Auto-collect fires on MAIL_SHOW.  COD mail
+    -- is ALWAYS skipped in auto-collect; we never auto-pay a CODAmount.
+    mailAutoCollect     = false,  -- master: collect on mail open
+    mailCollectMoney    = true,   -- take money attachments
+    mailCollectItems    = true,   -- take item attachments
+    mailAutoDeleteRead  = false,  -- delete read mail with no remaining attachments / money
 }
 
 -------------------------------------------------------------------------------
@@ -1068,6 +1075,146 @@ local function EAL_DepositStashItems(force)
 end
 
 -------------------------------------------------------------------------------
+-- Mail auto-collect + auto-clean
+--
+-- Fires on MAIL_SHOW when EAL_CDB.mailAutoCollect is on. Walks every mail in
+-- the inbox and takes the money / item attachments according to the user's
+-- sub-toggles.  COD mail is always skipped (we NEVER auto-pay a CODAmount).
+--
+-- Most 3.3.5a servers rate-limit mail actions to ~1/second, so we space
+-- each TakeInboxItem / TakeInboxMoney call by 0.6s.  TakeInboxItem fires
+-- a MAIL_INBOX_UPDATE event that can renumber the inbox; we capture the
+-- index list at the start and re-validate before each action.
+--
+-- Auto-delete runs after collection: iterates the inbox backwards (so
+-- earlier indices stay valid as later ones are deleted) and removes any
+-- mail that is wasRead, has no money, no items, and no CODAmount.
+-------------------------------------------------------------------------------
+local g_processingMail = false
+
+-- Returns true if this mail is "fully empty" -- read, no money, no items,
+-- no COD owed.  Safe to DeleteInboxItem.
+local function EAL_IsMailDeletable(idx)
+    local _, _, _, _, money, codAmount, _, itemCount, wasRead = GetInboxHeaderInfo(idx)
+    return wasRead and (money or 0) == 0 and (codAmount or 0) == 0
+                   and (itemCount or 0) == 0
+end
+
+local function EAL_CleanReadMail()
+    if g_processingMail then return end
+    if not MailFrame or not MailFrame:IsShown() then return end
+
+    local n = GetInboxNumItems() or 0
+    if n == 0 then return end
+
+    g_processingMail = true
+    local deleted = 0
+
+    -- Iterate backward so each deletion doesn't shift indices below.
+    local function CleanNext(idx)
+        if idx < 1 then
+            g_processingMail = false
+            if deleted > 0 then
+                Print("Deleted |cffffff00" .. deleted ..
+                      "|r read empty mail(s).")
+            end
+            return
+        end
+        if EAL_IsMailDeletable(idx) then
+            DeleteInboxItem(idx)
+            deleted = deleted + 1
+            After(0.3, function() CleanNext(idx - 1) end)
+        else
+            CleanNext(idx - 1)
+        end
+    end
+
+    CleanNext(GetInboxNumItems() or 0)
+end
+
+local function EAL_AutoCollectMail(force)
+    if g_processingMail then return end
+    if not MailFrame or not MailFrame:IsShown() then
+        if force then Print("|cffff4444Mailbox not open.|r") end
+        return
+    end
+    local cfg = EAL_CDB
+    if not force and not (cfg and cfg.mailAutoCollect) then return end
+
+    local total = GetInboxNumItems() or 0
+    if total == 0 then
+        if force then Print("Mailbox is empty.") end
+        return
+    end
+
+    g_processingMail = true
+    local moneyTaken, itemsTaken, codSkipped = 0, 0, 0
+
+    -- We walk forward, but indices can shift when mail expires or is
+    -- received.  Re-read the header on each iteration.
+    local function ProcessNext(idx)
+        if idx > GetInboxNumItems() or idx > total then
+            g_processingMail = false
+            -- Summary
+            local msg = "Mail: "
+            local parts = {}
+            if moneyTaken > 0 then table.insert(parts, FormatMoney(moneyTaken) .. " collected") end
+            if itemsTaken > 0 then table.insert(parts, itemsTaken .. " item(s) collected") end
+            if codSkipped > 0 then table.insert(parts, "|cffff9900" .. codSkipped .. " COD skipped|r") end
+            if #parts == 0 then
+                Print("Mail: nothing to collect.")
+            else
+                Print(msg .. table.concat(parts, ", ") .. ".")
+            end
+
+            -- Optional cleanup pass
+            if cfg.mailAutoDeleteRead then
+                After(0.4, EAL_CleanReadMail)
+            end
+            return
+        end
+
+        local _, _, sender, subject, money, codAmount, _, itemCount, _, _ =
+            GetInboxHeaderInfo(idx)
+
+        -- COD safety -- never auto-pay a CODAmount
+        if (codAmount or 0) > 0 then
+            codSkipped = codSkipped + 1
+            ProcessNext(idx + 1)
+            return
+        end
+
+        -- Take money first if present and configured
+        if (money or 0) > 0 and cfg.mailCollectMoney then
+            TakeInboxMoney(idx)
+            moneyTaken = moneyTaken + money
+            After(0.6, function() ProcessNext(idx) end)   -- re-check same idx for items
+            return
+        end
+
+        -- Then take all item attachments if configured
+        if (itemCount or 0) > 0 and cfg.mailCollectItems then
+            -- Find the first attachment slot that still has an item.
+            local takeSlot
+            for a = 1, 16 do   -- max attachments per mail in 3.3.5a is ~16
+                local name = GetInboxItem(idx, a)
+                if name then takeSlot = a; break end
+            end
+            if takeSlot then
+                TakeInboxItem(idx, takeSlot)
+                itemsTaken = itemsTaken + 1
+                After(0.6, function() ProcessNext(idx) end)
+                return
+            end
+        end
+
+        ProcessNext(idx + 1)
+    end
+
+    ProcessNext(1)
+end
+
+-------------------------------------------------------------------------------
 -- Whitelist quick-add helpers (drag-drop + Ctrl+Shift+Click hook)
 --
 -- Both paths funnel through EAL_LoadIntoWhitelistInput, which writes the item
@@ -1079,15 +1226,19 @@ end
 -- Routes a dropped/clicked item to either the whitelist or the bank stash
 -- input, based on which tab is currently active.  If neither is active,
 -- defaults to the whitelist tab.
+-- Tab-index constants (must match the layout in EAL_BuildGUI).
+local TAB_WHITELIST_IDX = 3
+local TAB_BANK_IDX      = 4
+
 local function EAL_LoadIntoListInput(itemName)
     if not itemName or itemName == "" then return false end
 
-    local targetTab = 4   -- default: Whitelist
+    local targetTab = TAB_WHITELIST_IDX   -- default: Whitelist
     local inputName = "EAL_BlacklistInput"
     local listLabel = "Whitelist"
 
-    if EAL_DB and EAL_DB.lastTab == 5 then
-        targetTab = 5
+    if EAL_DB and EAL_DB.lastTab == TAB_BANK_IDX then
+        targetTab = TAB_BANK_IDX
         inputName = "EAL_StashInput"
         listLabel = "Stash"
     end
@@ -1631,10 +1782,14 @@ local function EAL_BuildGUI()
     local tabDefs = {
         { key = "general",   label = L["General"]   },
         { key = "sell",      label = L["Sell"]      },
-        { key = "actions",   label = L["Actions"]   },
         { key = "whitelist", label = L["Whitelist"] },
         { key = "bank",      label = L["Bank"]      },
+        { key = "mail",      label = L["Mail"]      },
     }
+    -- Tab-index constants -- update these in lockstep with tabDefs.
+    -- Used in the drag-drop/Ctrl+Shift+Click router below.
+    local TAB_GENERAL, TAB_SELL = 1, 2
+    local TAB_WHITELIST, TAB_BANK, TAB_MAIL = 3, 4, 5
 
     local panels = {}
     local tabBtns = {}
@@ -1726,11 +1881,11 @@ local function EAL_BuildGUI()
     -- visibility inheritance.
     for i = 1, #tabDefs do panels[i].forceWidgets = {} end
 
-    local pGeneral   = panels[1]
-    local pSell      = panels[2]
-    local pActions   = panels[3]
-    local pWhitelist = panels[4]
-    local pBank      = panels[5]
+    local pGeneral   = panels[TAB_GENERAL]
+    local pSell      = panels[TAB_SELL]
+    local pWhitelist = panels[TAB_WHITELIST]
+    local pBank      = panels[TAB_BANK]
+    local pMail      = panels[TAB_MAIL]
 
     -------------------------------------------------------------------------
     -- Tab 1: GENERAL
@@ -2081,14 +2236,11 @@ local function EAL_BuildGUI()
         cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    -------------------------------------------------------------------------
-    -- Tab 3: ACTIONS
-    -------------------------------------------------------------------------
-    MakeHeader(pActions, L["QUICK ACTIONS"], 18, -124)
-
-    -- Quick-sell row
-    local quickSellBtn = CreateFrame("Button", nil, pActions, "GameMenuButtonTemplate")
-    quickSellBtn:SetPoint("TOPLEFT", pActions, "TOPLEFT", 18, -148)
+    -- ---- Quick-sell-by-iLvl (was the Actions tab in v4.5.x) -------------
+    -- Folded into the Sell tab now that Actions had only one row.
+    MakeDivider(pSell, -380)
+    local quickSellBtn = CreateFrame("Button", nil, pSell, "GameMenuButtonTemplate")
+    quickSellBtn:SetPoint("TOPLEFT", pSell, "TOPLEFT", 18, -392)
     quickSellBtn:SetWidth(266); quickSellBtn:SetHeight(22)
     local function UpdateQuickSellBtnText()
         quickSellBtn:SetText(string.format(L["Sell gear at iLvl %d or below"],
@@ -2107,11 +2259,7 @@ local function EAL_BuildGUI()
         "|cffff9900Open a vendor before clicking.|r",
     })
 
-    local ilvlInput = CreateFrame("EditBox", nil, pActions, "InputBoxTemplate")
-    ilvlInput:SetPoint("TOPLEFT", pActions, "TOPLEFT", 300, -146)
-    ilvlInput:SetWidth(42); ilvlInput:SetHeight(20)
-    ilvlInput:SetAutoFocus(false); ilvlInput:SetMaxLetters(4)
-    ilvlInput:SetNumeric(true); ilvlInput:SetJustifyH("CENTER")
+    local ilvlInput = MakeNumericInput(pSell, 300, -390, 42, 4)
     ilvlInput:SetText(tostring(EAL_DB.ilvlSellThreshold or 199))
     ilvlInput:SetScript("OnEnterPressed", function(self)
         local n = tonumber(self:GetText()) or 199
@@ -2128,7 +2276,7 @@ local function EAL_BuildGUI()
     end)
 
     -------------------------------------------------------------------------
-    -- Tab 4: WHITELIST
+    -- Tab 3: WHITELIST
     -------------------------------------------------------------------------
     MakeHeader(pWhitelist, L["ITEM WHITELIST"] ..
                "  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -124)
@@ -2278,7 +2426,7 @@ local function EAL_BuildGUI()
     g_scrollThumb = thumb
 
     -------------------------------------------------------------------------
-    -- Tab 5: BANK
+    -- Tab 4: BANK
     -- Auto-deposit-on-open toggle (per-character) and a stash list mirror
     -- of the whitelist UI.  Items in the stash list (union of account +
     -- per-character) are moved into the bank automatically when the
@@ -2459,10 +2607,112 @@ local function EAL_BuildGUI()
     sThumb:SetTexture(0.55, 0.45, 0.25, 0.9); sThumb:Hide()
     g_stashScrollThumb = sThumb
 
+    -------------------------------------------------------------------------
+    -- Tab 5: MAIL
+    -- Per-character auto-collect on MAIL_SHOW with sub-toggles for money
+    -- vs. items, plus optional cleanup of read empty mail.  COD mail is
+    -- always skipped in auto-collect: we never auto-pay a CODAmount.
+    -------------------------------------------------------------------------
+    MakeHeader(pMail, L["MAIL SETTINGS"], 18, -124)
+
+    -- Master auto-collect toggle (per-character)
+    local mailMasterCb = CreateFrame("CheckButton", nil, pMail, "UICheckButtonTemplate")
+    mailMasterCb:SetPoint("TOPLEFT", pMail, "TOPLEFT", 18, -144)
+    mailMasterCb:SetWidth(24); mailMasterCb:SetHeight(24)
+    mailMasterCb:SetChecked(EAL_CDB and EAL_CDB.mailAutoCollect or false)
+    local mailMasterLbl = pMail:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    mailMasterLbl:SetPoint("LEFT", mailMasterCb, "RIGHT", 1, 0)
+    mailMasterLbl:SetText("|cffffd700Auto-collect on mailbox open|r |cffaaaaaa(this character)|r")
+    mailMasterCb:SetScript("OnClick", function(self)
+        EAL_CDB.mailAutoCollect = self:GetChecked() and true or false
+        if EAL_CDB.mailAutoCollect then
+            Print("Mail auto-collect: |cff44ff44ENABLED|r (this character).")
+        else
+            Print("Mail auto-collect: |cffaaaaaaDISABLED|r (this character).")
+        end
+    end)
+    mailMasterCb:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("|cffffd700Auto-collect on mailbox open|r")
+        GameTooltip:AddLine("|cffaaaaaaWhen you open your mailbox, take money|r")
+        GameTooltip:AddLine("|cffaaaaaaand/or attachments per the sub-toggles.|r")
+        GameTooltip:AddLine("|cffff9900COD mail is always skipped.|r")
+        GameTooltip:Show()
+    end)
+    mailMasterCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    -- Sub-toggles (indented under master)
+    MakeCheckbox(pMail, "|cffffd700Collect money|r attachments", 36, -170,
+        function() return EAL_CDB and EAL_CDB.mailCollectMoney end,
+        function(v) EAL_CDB.mailCollectMoney = v end,
+        {
+            "|cffffd700Collect money|r",
+            "|cffaaaaaaTake the gold/silver/copper sent in each mail.|r",
+        })
+
+    MakeCheckbox(pMail, "|cffffd700Collect item|r attachments", 36, -192,
+        function() return EAL_CDB and EAL_CDB.mailCollectItems end,
+        function(v) EAL_CDB.mailCollectItems = v end,
+        {
+            "|cffffd700Collect items|r",
+            "|cffaaaaaaTake each item attachment from non-COD mails.|r",
+            "|cffaaaaaaItems land in your bags; mail with all|r",
+            "|cffaaaaaaattachments taken can then be auto-deleted|r",
+            "|cffaaaaaa(if the option below is on).|r",
+        })
+
+    -- Auto-delete read empty mail
+    MakeCheckbox(pMail, "|cffff4444Auto-delete|r read mail with no attachments", 18, -220,
+        function() return EAL_CDB and EAL_CDB.mailAutoDeleteRead end,
+        function(v) EAL_CDB.mailAutoDeleteRead = v end,
+        {
+            "|cffff4444Auto-delete read empty mail|r",
+            "|cffaaaaaaAfter the auto-collect pass, sweeps the inbox|r",
+            "|cffaaaaaaand deletes any mail that is read, has no|r",
+            "|cffaaaaaaitems, no money, and no COD.  Irreversible.|r",
+            " ",
+            "|cffff9900Recommended OFF unless you trust the collect|r",
+            "|cffff9900pass to never miss anything you care about.|r",
+        })
+
+    -- Manual action row
+    MakeDivider(pMail, -250)
+    local collectNowBtn = CreateFrame("Button", nil, pMail, "GameMenuButtonTemplate")
+    collectNowBtn:SetPoint("TOPLEFT", pMail, "TOPLEFT", 18, -262)
+    collectNowBtn:SetWidth(150); collectNowBtn:SetHeight(22)
+    collectNowBtn:SetText("Collect Now")
+    collectNowBtn:SetScript("OnClick", function() EAL_AutoCollectMail(true) end)
+    MakeTooltipButton(collectNowBtn, "|cffffd700Collect Now|r", {
+        "|cffaaaaaaForce a collect pass on the open mailbox.|r",
+        "|cffaaaaaaUses your current sub-toggle settings.|r",
+        "|cffaaaaaaAlso bound to |cffffff00/eal mail|r.",
+    })
+
+    local cleanMailBtn = CreateFrame("Button", nil, pMail, "GameMenuButtonTemplate")
+    cleanMailBtn:SetPoint("TOPLEFT", pMail, "TOPLEFT", 178, -262)
+    cleanMailBtn:SetWidth(164); cleanMailBtn:SetHeight(22)
+    cleanMailBtn:SetText("Clean Read Mail")
+    cleanMailBtn:GetNormalFontObject():SetTextColor(1, 0.55, 0.35)
+    cleanMailBtn:SetScript("OnClick", function() EAL_CleanReadMail() end)
+    MakeTooltipButton(cleanMailBtn, "|cffff8855Clean Read Mail|r", {
+        "|cffaaaaaaDelete every mail in your inbox that is|r",
+        "|cffaaaaaaread, has no money/items, and no COD.|r",
+        "|cffff9900Irreversible.|r",
+        " ",
+        "|cffaaaaaaAlso bound to |cffffff00/eal cleanmail|r.",
+    })
+
+    -- COD safety hint
+    local mailCodHint = pMail:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    mailCodHint:SetPoint("TOPLEFT", pMail, "TOPLEFT", 18, -294)
+    mailCodHint:SetPoint("TOPRIGHT", pMail, "TOPRIGHT", -18, -294)
+    mailCodHint:SetJustifyH("LEFT")
+    mailCodHint:SetText("|cffaaaaaaCOD mail is always skipped \226\128\148 you'll never accidentally pay one.|r")
+
     -- Bottom hint (always visible across tabs)
     local hint = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("BOTTOM", 0, 14)
-    hint:SetText("|cffaaaaaa/eal toggle | sell | deposit | reset   -   minimap right-click toggles enable|r")
+    hint:SetText("|cffaaaaaa/eal toggle | sell | deposit | mail | reset   -   right-click minimap = toggle|r")
 
     -- Restore last-selected tab, or default to General
     local startTab = tonumber(EAL_DB.lastTab) or 1
@@ -2558,6 +2808,20 @@ local function RunMigrations(db, cdb)
         db.schemaVersion = 2
     end
 
+    -- v3 -> v4: Actions tab was removed in v4.6.0 (quick-sell-by-iLvl
+    -- moved to the Sell tab) and Mail tab was added.  Remap the stored
+    -- lastTab index so users who were last on Actions/Whitelist/Bank
+    -- end up on the correct tab in the new layout instead of being
+    -- silently shifted by one.
+    --   Old: 1=General 2=Sell 3=Actions 4=Whitelist 5=Bank
+    --   New: 1=General 2=Sell           3=Whitelist 4=Bank 5=Mail
+    local function _v3_to_v4_lastTab(db)
+        if db.lastTab == 3 then db.lastTab = 1   -- Actions removed
+        elseif db.lastTab == 4 then db.lastTab = 3   -- Whitelist shifted up
+        elseif db.lastTab == 5 then db.lastTab = 4   -- Bank shifted up
+        end
+    end
+
     -- v2 -> v3: split the single autoDeleteRares boolean into a per-quality
     -- table.  If the user had autoDeleteRares = true under v2, preserve
     -- their existing behavior by enabling the master + Rare quality only.
@@ -2572,6 +2836,11 @@ local function RunMigrations(db, cdb)
         end
         db.autoDeleteRares = nil   -- old field no longer used
         db.schemaVersion   = 3
+    end
+
+    if from < 4 then
+        _v3_to_v4_lastTab(db)
+        db.schemaVersion = 4
     end
 
     cdb.schemaVersion = CURRENT_SCHEMA
@@ -2604,6 +2873,7 @@ eventFrame:RegisterEvent("MERCHANT_SHOW")
 eventFrame:RegisterEvent("MERCHANT_CLOSED")
 eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("BANKFRAME_OPENED")
+eventFrame:RegisterEvent("MAIL_SHOW")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -2632,6 +2902,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
     elseif event == "BANKFRAME_OPENED" then
         -- Slight delay so the bank frame is fully populated before scanning.
         After(0.2, function() EAL_DepositStashItems(false) end)
+
+    elseif event == "MAIL_SHOW" then
+        -- Inbox isn't necessarily populated on the same frame as MAIL_SHOW;
+        -- 0.4s gives it time to settle before we start walking entries.
+        After(0.4, function() EAL_AutoCollectMail(false) end)
     end
 end)
 
@@ -2672,12 +2947,16 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         EAL_PromptSellLowILvl()
     elseif cmd == "deposit" or cmd == "stash" then
         EAL_DepositStashItems(true)
+    elseif cmd == "mail" or cmd == "collect" then
+        EAL_AutoCollectMail(true)
+    elseif cmd == "cleanmail" then
+        EAL_CleanReadMail()
     elseif cmd == "minimap" then
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()
