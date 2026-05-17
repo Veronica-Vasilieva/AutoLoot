@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.4.3"
+local ADDON_VERSION = "4.4.4"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -77,10 +77,16 @@ local DEFAULTS = {
     -- but only takes effect when the master `enabled` flag is on.
     autoDeleteUnsellable = {
         enabled  = false,
-        common   = false,   -- white items (Q_WHITE = 1)
-        uncommon = false,   -- green items (Q_UNCOMMON = 2)
-        rare     = false,   -- blue items  (Q_RARE = 3)
-        epic     = false,   -- purple      (Q_EPIC = 4)
+        -- Grey is a SPECIAL case: grey items always have a vendor price
+        -- by design, so we delete ALL grey items when this is on (the
+        -- "unsellable" vendor-price filter is bypassed for Q_GREY only).
+        -- Useful for players who want to skip the trip to a vendor and
+        -- just nuke vendor trash directly.
+        grey     = false,
+        common   = false,   -- white items (Q_WHITE = 1), only if unsellable
+        uncommon = false,   -- green items (Q_UNCOMMON = 2), only if unsellable
+        rare     = false,   -- blue items  (Q_RARE = 3),     only if unsellable
+        epic     = false,   -- purple      (Q_EPIC = 4),     only if unsellable
     },
 
     soundEnabled      = true,
@@ -815,6 +821,7 @@ local g_deletingUnsellable = false
 local function EAL_IsAutoDeleteQuality(quality)
     local cfg = EAL_DB and EAL_DB.autoDeleteUnsellable
     if not cfg or not cfg.enabled then return false end
+    if quality == Q_GREY     and cfg.grey     then return true end
     if quality == Q_WHITE    and cfg.common   then return true end
     if quality == Q_UNCOMMON and cfg.uncommon then return true end
     if quality == Q_RARE     and cfg.rare     then return true end
@@ -822,10 +829,23 @@ local function EAL_IsAutoDeleteQuality(quality)
     return false
 end
 
+-- True when this quality+item combination should be auto-deleted under
+-- the current settings.  Grey is special-cased to ignore the vendor-price
+-- filter (delete ALL greys when configured); other qualities only delete
+-- when the item has no vendor price.
+local function EAL_ShouldAutoDelete(quality, vendorPrice, name)
+    if not EAL_IsAutoDeleteQuality(quality) then return false end
+    if name and IsBlacklisted(name) then return false end
+    if quality == Q_GREY then
+        return true   -- delete all greys regardless of vendor price
+    end
+    return (not vendorPrice) or vendorPrice == 0
+end
+
 local function EAL_DeleteUnsellableItems()
     local cfg = EAL_DB and EAL_DB.autoDeleteUnsellable
     if not cfg or not cfg.enabled then return end
-    if not (cfg.common or cfg.uncommon or cfg.rare or cfg.epic) then return end
+    if not (cfg.grey or cfg.common or cfg.uncommon or cfg.rare or cfg.epic) then return end
     if g_deletingUnsellable or InCombatLockdown() then return end
 
     local toDelete = {}
@@ -835,11 +855,7 @@ local function EAL_DeleteUnsellableItems()
             local link = GetContainerItemLink(bag, slot)
             if link then
                 local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
-                if name
-                    and EAL_IsAutoDeleteQuality(quality)
-                    and (not vendorPrice or vendorPrice == 0)
-                    and not IsBlacklisted(name)
-                then
+                if name and EAL_ShouldAutoDelete(quality, vendorPrice, name) then
                     table.insert(toDelete, { bag = bag, slot = slot, quality = quality })
                 end
             end
@@ -861,11 +877,7 @@ local function EAL_DeleteUnsellableItems()
         local link = GetContainerItemLink(item.bag, item.slot)
         if link then
             local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
-            if name
-                and EAL_IsAutoDeleteQuality(quality)
-                and (not vendorPrice or vendorPrice == 0)
-                and not IsBlacklisted(name)
-            then
+            if name and EAL_ShouldAutoDelete(quality, vendorPrice, name) then
                 ClearCursor()
                 PickupContainerItem(item.bag, item.slot)
                 DeleteCursorItem()
@@ -1231,6 +1243,44 @@ local function MakeDivider(parent, y)
     return t
 end
 
+-- A small numeric EditBox without InputBoxTemplate.  We hand-roll the
+-- container + backdrop because in 3.3.5a, InputBoxTemplate's child Region
+-- textures (Left/Middle/Right of the gold border) sometimes leak past a
+-- Hide() on the EditBox itself, leaving stray dark rectangles visible
+-- when a tab panel is hidden.  This bypass uses a plain Frame backdrop
+-- and a plain EditBox child, both of which hide reliably with the parent.
+local function MakeNumericInput(parent, x, y, w, maxLetters)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(w or 48, 20)
+    container:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+    container:SetBackdrop({
+        bgFile   = "Interface\\ChatFrame\\ChatFrameBackground",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = false, edgeSize = 8,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 },
+    })
+    container:SetBackdropColor(0.05, 0.05, 0.05, 0.9)
+    container:SetBackdropBorderColor(0.55, 0.42, 0.18, 0.95)
+    container:EnableMouse(true)
+
+    local edit = CreateFrame("EditBox", nil, container)
+    edit:SetPoint("TOPLEFT",     container, "TOPLEFT",      4, -2)
+    edit:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", -4,  2)
+    edit:SetFontObject("ChatFontNormal")
+    edit:SetAutoFocus(false)
+    edit:SetNumeric(true)
+    edit:SetMaxLetters(maxLetters or 6)
+    edit:SetJustifyH("CENTER")
+    edit:SetTextInsets(0, 0, 0, 0)
+
+    -- Clicking the gold-bordered container focuses the edit box.
+    container:SetScript("OnMouseDown", function() edit:SetFocus() end)
+
+    -- Expose the container in case caller wants to anchor adjacent labels.
+    edit.container = container
+    return edit
+end
+
 local function MakeCheckbox(parent, labelText, x, y, getValue, setValue, tooltip)
     local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
     cb:SetPoint("TOPLEFT", x, y)
@@ -1565,16 +1615,11 @@ local function EAL_BuildGUI()
     local sellPriceLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     sellPriceLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -222)
     sellPriceLbl:SetText("Skip sell if item is worth more than")
-    local sellPriceInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
-    sellPriceInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 252, -220)
-    sellPriceInput:SetWidth(48); sellPriceInput:SetHeight(20)
-    sellPriceInput:SetAutoFocus(false); sellPriceInput:SetMaxLetters(6)
-    sellPriceInput:SetNumeric(true); sellPriceInput:SetJustifyH("CENTER")
+    local sellPriceInput = MakeNumericInput(pGeneral, 252, -220, 48, 6)
     sellPriceInput:SetText(tostring(math.floor((EAL_DB.sellPriceMax or 0) / 10000)))
     local sellPriceUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    sellPriceUnit:SetPoint("LEFT", sellPriceInput, "RIGHT", 6, 0)
+    sellPriceUnit:SetPoint("LEFT", sellPriceInput.container, "RIGHT", 6, 0)
     sellPriceUnit:SetText("|cffffd700g|r")
-    table.insert(pGeneral.forceWidgets, sellPriceInput)
     sellPriceInput:SetScript("OnEnterPressed", function(self)
         local g = tonumber(self:GetText()) or 0
         if g < 0 then g = 0 end
@@ -1608,16 +1653,11 @@ local function EAL_BuildGUI()
     local repairLbl = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     repairLbl:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 18, -246)
     repairLbl:SetText("Skip auto-repair if cost is over")
-    local repairInput = CreateFrame("EditBox", nil, pGeneral, "InputBoxTemplate")
-    repairInput:SetPoint("TOPLEFT", pGeneral, "TOPLEFT", 252, -244)
-    repairInput:SetWidth(48); repairInput:SetHeight(20)
-    repairInput:SetAutoFocus(false); repairInput:SetMaxLetters(6)
-    repairInput:SetNumeric(true); repairInput:SetJustifyH("CENTER")
+    local repairInput = MakeNumericInput(pGeneral, 252, -244, 48, 6)
     repairInput:SetText(tostring(math.floor((EAL_DB.repairCostCap or 0) / 10000)))
     local repairUnit = pGeneral:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    repairUnit:SetPoint("LEFT", repairInput, "RIGHT", 6, 0)
+    repairUnit:SetPoint("LEFT", repairInput.container, "RIGHT", 6, 0)
     repairUnit:SetText("|cffffd700g|r")
-    table.insert(pGeneral.forceWidgets, repairInput)
     repairInput:SetScript("OnEnterPressed", function(self)
         local g = tonumber(self:GetText()) or 0
         if g < 0 then g = 0 end
@@ -1765,9 +1805,14 @@ local function EAL_BuildGUI()
     -- Auto-delete unsellable (master + 4 quality sub-toggles)
     MakeDivider(pSell, -282)
     EAL_DB.autoDeleteUnsellable = EAL_DB.autoDeleteUnsellable or {
-        enabled = false, common = false, uncommon = false,
+        enabled = false, grey = false, common = false, uncommon = false,
         rare = false, epic = false,
     }
+    -- Migration safety: if the user is upgrading from a SavedVariables that
+    -- predates the grey field (pre-v4.4.4), default it to false in-place.
+    if EAL_DB.autoDeleteUnsellable.grey == nil then
+        EAL_DB.autoDeleteUnsellable.grey = false
+    end
     local autoDelCb = CreateFrame("CheckButton", nil, pSell, "UICheckButtonTemplate")
     autoDelCb:SetPoint("TOPLEFT", pSell, "TOPLEFT", 18, -294)
     autoDelCb:SetWidth(24); autoDelCb:SetHeight(24)
@@ -1796,11 +1841,14 @@ local function EAL_BuildGUI()
     autoDelCb:SetScript("OnLeave", function() GameTooltip:Hide() end)
     g_autoDelCb = autoDelCb
 
+    -- Grey is special: deletes ALL grey items regardless of vendor price.
+    -- Other qualities only delete items with no vendor price.
     local subDefs = {
-        { key = "common",   text = "|cffffffff" .. L["Common"]   .. "|r", x = 32,  y = -318 },
-        { key = "uncommon", text = "|cff1eff00" .. L["Uncommon"] .. "|r", x = 132, y = -318 },
-        { key = "rare",     text = "|cff0070dd" .. L["Rare"]     .. "|r", x = 244, y = -318 },
-        { key = "epic",     text = "|cffa335ee" .. L["Epic"]     .. "|r", x = 32,  y = -342 },
+        { key = "grey",     text = "|cff9d9d9d" .. L["Grey"]     .. "|r", x = 32,  y = -318, special = true },
+        { key = "common",   text = "|cffffffff" .. L["Common"]   .. "|r", x = 132, y = -318 },
+        { key = "uncommon", text = "|cff1eff00" .. L["Uncommon"] .. "|r", x = 244, y = -318 },
+        { key = "rare",     text = "|cff0070dd" .. L["Rare"]     .. "|r", x = 32,  y = -342 },
+        { key = "epic",     text = "|cffa335ee" .. L["Epic"]     .. "|r", x = 132, y = -342 },
     }
     for _, def in ipairs(subDefs) do
         local cb = CreateFrame("CheckButton", nil, pSell, "UICheckButtonTemplate")
@@ -1813,12 +1861,22 @@ local function EAL_BuildGUI()
         cb:SetScript("OnClick", function(self)
             EAL_DB.autoDeleteUnsellable[def.key] = self:GetChecked() and true or false
         end)
-        local capturedKey = def.key
+        local capturedKey, capturedSpecial = def.key, def.special
         cb:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:AddLine("|cffff4444Delete unsellable " .. capturedKey .. " items|r")
-            GameTooltip:AddLine("|cffaaaaaaWhen master is on, items of this quality|r")
-            GameTooltip:AddLine("|cffaaaaaawith no vendor price are deleted.|r")
+            if capturedSpecial then
+                GameTooltip:AddLine("|cff9d9d9dDelete ALL Grey items|r")
+                GameTooltip:AddLine("|cffff9900Special:|r |cffaaaaaadeletes every grey item|r")
+                GameTooltip:AddLine("|cffaaaaaain bags, regardless of vendor price.|r")
+                GameTooltip:AddLine("|cffaaaaaaSkips whitelisted names.|r")
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("|cffaaaaaaUseful when you want to skip the trip|r")
+                GameTooltip:AddLine("|cffaaaaaato a vendor and just nuke trash.|r")
+            else
+                GameTooltip:AddLine("|cffff4444Delete unsellable " .. capturedKey .. " items|r")
+                GameTooltip:AddLine("|cffaaaaaaWhen master is on, items of this quality|r")
+                GameTooltip:AddLine("|cffaaaaaawith no vendor price are deleted.|r")
+            end
             GameTooltip:Show()
         end)
         cb:SetScript("OnLeave", function() GameTooltip:Hide() end)

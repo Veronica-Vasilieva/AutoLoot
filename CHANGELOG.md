@@ -1,5 +1,16 @@
 # Changelog — AutoLoot
 
+## [4.4.4] - 2026-05-17
+
+### Fixed
+- **InputBoxTemplate dark-box leak is finally gone.** Three attempts (v4.4.1 / v4.4.2 / v4.4.3) tried progressively more aggressive `Hide()` + `SetAlpha(0)` strategies on the parent EditBox and its child Regions, but the gold-bordered "dark box" still rendered across tabs. Root cause appears to be a 3.3.5a quirk where `InputBoxTemplate`'s Left/Middle/Right child Region textures don't reliably hide with their parent EditBox. **Fix**: ditched `InputBoxTemplate` entirely for the two General-tab numeric inputs. Replaced with a hand-rolled `MakeNumericInput` helper that builds a plain Frame container with a custom backdrop + a plain EditBox child. No child Regions, no leak, hides cleanly when the General tab isn't active.
+
+### Added
+- **Auto-delete Grey items.** New `Grey` checkbox in the auto-delete-by-quality sub-grid on the Sell tab. **Special-cased** to ignore the "no vendor price" filter that applies to the other rarities — when ticked, it deletes ALL grey items in bags during the periodic loot-cycle scan, regardless of whether they have a vendor price. The existing whitelist still applies (grey items whose names are whitelisted are skipped). Useful when you want to skip the trip to a vendor entirely and just nuke trash.
+
+### Migration
+- Existing saves get the new `EAL_DB.autoDeleteUnsellable.grey = false` field added on next load. Defaults to off; no behavior change unless you tick it.
+
 ## [4.4.3] - 2026-05-17
 
 ### Fixed
