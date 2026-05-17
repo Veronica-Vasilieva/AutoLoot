@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.10.1"
+local ADDON_VERSION = "4.10.2"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -2494,7 +2494,21 @@ local function EAL_BuildGUI()
     -- Make the whole panel a drop target.  When an item is dropped on
     -- empty panel space, we extract its name and load it into the input
     -- so the user only has to click +Acct/+Char to commit.
+    --
+    -- The mouse-enabled panel intercepts click events that would normally
+    -- propagate to the parent window's drag handler, so the window can't
+    -- be moved while this tab is active unless we forward drag start/stop
+    -- ourselves. RegisterForDrag + OnDragStart/Stop on the panel lets a
+    -- left-click drag on empty panel space move the window; OnReceiveDrag
+    -- still fires when the user is holding an item, so drops keep working.
     pWhitelist:EnableMouse(true)
+    pWhitelist:RegisterForDrag("LeftButton")
+    pWhitelist:SetScript("OnDragStart", function() win:StartMoving() end)
+    pWhitelist:SetScript("OnDragStop", function()
+        win:StopMovingOrSizing()
+        EAL_DB.windowX = win:GetLeft()
+        EAL_DB.windowY = win:GetTop() - UIParent:GetHeight()
+    end)
     pWhitelist:SetScript("OnReceiveDrag", function(self)
         local cursorType, _, link = GetCursorInfo()
         if cursorType == "item" and link then
@@ -2689,8 +2703,17 @@ local function EAL_BuildGUI()
     MakeHeader(pBank, L["STASH LIST"] ..
                "  |cffb9b9b9[A]|raccount  |cff87ceeb[C]|rchar", 18, -220)
 
-    -- Drop target on the panel
+    -- Drop target on the panel.  Forward left-click-drag up to the
+    -- window so the user can still drag the settings window from this
+    -- tab (mouse-enabled child frames otherwise consume the click).
     pBank:EnableMouse(true)
+    pBank:RegisterForDrag("LeftButton")
+    pBank:SetScript("OnDragStart", function() win:StartMoving() end)
+    pBank:SetScript("OnDragStop", function()
+        win:StopMovingOrSizing()
+        EAL_DB.windowX = win:GetLeft()
+        EAL_DB.windowY = win:GetTop() - UIParent:GetHeight()
+    end)
     pBank:SetScript("OnReceiveDrag", function(self)
         local cursorType, _, link = GetCursorInfo()
         if cursorType == "item" and link then

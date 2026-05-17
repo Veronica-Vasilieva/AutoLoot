@@ -1,5 +1,10 @@
 # Changelog — AutoLoot
 
+## [4.10.2] - 2026-05-18
+
+### Fixed
+- **Window couldn't be dragged from the Whitelist or Bank tabs.** Pre-existing bug going back to v4.4.0 (Whitelist) and v4.5.0 (Bank). Those two panels call `EnableMouse(true)` on themselves so they can receive item drops for the drag-drop / Ctrl+Shift+Click whitelist quick-add — but a mouse-enabled child frame intercepts click events that would otherwise propagate to the parent window's drag handler, leaving the window pinned. Fix: both panels now also `RegisterForDrag("LeftButton")` and forward `OnDragStart` / `OnDragStop` up to the window's `StartMoving` / `StopMovingOrSizing` calls (plus the same `EAL_DB.windowX/Y` save the window itself does). `OnReceiveDrag` (for item drops) keeps working unchanged. The other three tabs (General, Sell, Mail) were never affected because they don't enable mouse on the panel.
+
 ## [4.10.1] - 2026-05-17
 
 ### Added — image resizer tool
