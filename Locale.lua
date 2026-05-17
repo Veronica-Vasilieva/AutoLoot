@@ -38,6 +38,7 @@ L["Bank"]                  = "Bank"
 L["BANK SETTINGS"]         = "BANK SETTINGS"
 L["STASH LIST"]            = "STASH LIST"
 L["GUILD BANK"]            = "GUILD BANK"
+L["PERSONAL BANK"]         = "PERSONAL BANK"
 L["Mail"]                  = "Mail"
 L["MAIL SETTINGS"]         = "MAIL SETTINGS"
 

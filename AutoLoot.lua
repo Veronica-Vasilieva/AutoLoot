@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.10.3"
+local ADDON_VERSION = "4.11.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -1252,6 +1252,146 @@ local function EAL_ConsolidateGuildBankCurrentTab()
 end
 
 -------------------------------------------------------------------------------
+-- Personal bank stack consolidation
+--
+-- Mirrors EAL_ConsolidateGuildBankCurrentTab but operates on the player's
+-- own bank: main bank (bag -1) plus the seven bank-bag slots (5..11).
+-- Player bags 0..4 are NEVER touched -- this is bank-only.
+--
+-- Personal bank moves are much faster than guild bank ones (no per-tab
+-- withdrawal counter, no aggressive server rate-limit), so the per-move
+-- delay is 0.2s vs the guild bank's 0.6s.  Move primitive is identical:
+--   SplitContainerItem(src.bag, src.slot, amount)
+--   PickupContainerItem(dst.bag, dst.slot)
+-- followed by a "if anything left on cursor, put back at source" check.
+-------------------------------------------------------------------------------
+local PERSONAL_BANK_BAGS = { -1, 5, 6, 7, 8, 9, 10, 11 }
+local g_consolidatingBank = false
+
+local function EAL_ConsolidatePersonalBank()
+    if g_consolidatingBank then return end
+
+    if not BankFrame or not BankFrame:IsShown() then
+        Print("|cffff4444Bank not open.|r Open it first.")
+        return
+    end
+
+    g_consolidatingBank = true
+    local moves, capped = 0, false
+    -- "bag/slot -> bag/slot" pairs we've already attempted.  Prevents an
+    -- infinite loop if a move fails silently (e.g. item is somehow locked
+    -- or a race with another addon's bag operations).
+    local attempts = {}
+    -- Bank can hold 28 + 7*36 = 280 slots, so the move ceiling is higher
+    -- than guild bank's 60.  100 is comfortably above any realistic run.
+    local MAX_MOVES = 100
+
+    local function DoNext()
+        if capped then
+            g_consolidatingBank = false
+            Print("Bank consolidation hit the " .. MAX_MOVES ..
+                  "-move safety cap.  Re-run to continue.")
+            return
+        end
+
+        if not BankFrame or not BankFrame:IsShown() then
+            g_consolidatingBank = false
+            Print("Bank closed mid-consolidation. Moves so far: " .. moves)
+            return
+        end
+
+        -- Rescan all bank slots, build partials map.
+        local partials = {}
+        for _, bag in ipairs(PERSONAL_BANK_BAGS) do
+            local numSlots = GetContainerNumSlots(bag) or 0
+            for slot = 1, numSlots do
+                local link = GetContainerItemLink(bag, slot)
+                if link then
+                    local _, count = GetContainerItemInfo(bag, slot)
+                    local _, _, _, _, _, _, _, stackMax = GetItemInfo(link)
+                    if count and stackMax and stackMax > 1 and count < stackMax then
+                        local itemID = link:match("item:(%d+)")
+                        if itemID then
+                            partials[itemID] = partials[itemID] or {}
+                            table.insert(partials[itemID], {
+                                bag = bag, slot = slot,
+                                count = count, stackMax = stackMax,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Pick smallest source into largest destination per item type,
+        -- skipping any pair we've already tried.
+        local src, dst, amount
+        for _, list in pairs(partials) do
+            if #list >= 2 then
+                table.sort(list, function(a, b) return a.count < b.count end)
+                local s, d = list[1], list[#list]
+                local key = s.bag .. "/" .. s.slot .. "->" .. d.bag .. "/" .. d.slot
+                if not attempts[key] then
+                    src = s; dst = d
+                    amount = math.min(s.count, d.stackMax - d.count)
+                    attempts[key] = true
+                    break
+                end
+            end
+        end
+
+        if not src then
+            g_consolidatingBank = false
+            if moves > 0 then
+                Print("Bank consolidation complete (" .. moves .. " move(s)).")
+            else
+                Print("Bank: nothing to consolidate.")
+            end
+            return
+        end
+
+        -- Move: split exact amount off source, drop on dest.
+        ClearCursor()
+        if SplitContainerItem then
+            SplitContainerItem(src.bag, src.slot, amount)
+        else
+            PickupContainerItem(src.bag, src.slot)
+        end
+
+        After(0.2, function()
+            if not BankFrame or not BankFrame:IsShown() then
+                ClearCursor()
+                g_consolidatingBank = false
+                Print("Bank closed mid-move. Moves: " .. moves)
+                return
+            end
+            PickupContainerItem(dst.bag, dst.slot)
+
+            After(0.2, function()
+                -- Defensive: anything still on cursor (different item at
+                -- dst, locked slot, etc) -- put it back at source.
+                if CursorHasItem() then
+                    PickupContainerItem(src.bag, src.slot)
+                    After(0.15, function()
+                        ClearCursor()
+                        moves = moves + 1
+                        if moves >= MAX_MOVES then capped = true end
+                        DoNext()
+                    end)
+                else
+                    moves = moves + 1
+                    if moves >= MAX_MOVES then capped = true end
+                    DoNext()
+                end
+            end)
+        end)
+    end
+
+    Print("Bank: consolidating partial stacks...")
+    DoNext()
+end
+
+-------------------------------------------------------------------------------
 -- Mail auto-collect + auto-clean
 --
 -- Fires on MAIL_SHOW when EAL_CDB.mailAutoCollect is on. Walks every mail in
@@ -1938,6 +2078,7 @@ local function EAL_BuildGUI()
         GameTooltip:AddLine("|cffaaaaaa/eal deposit|r   |cff666666bank: deposit stash|r")
         GameTooltip:AddLine("|cffaaaaaa/eal mail|r   |cff666666mailbox: collect|r")
         GameTooltip:AddLine("|cffaaaaaa/eal cleanmail|r   |cff666666delete read empty|r")
+        GameTooltip:AddLine("|cffaaaaaa/eal bankconsolidate|r |cff888866| |r|cffaaaaaa/eal bc|r   |cff666666bank stacks|r")
         GameTooltip:AddLine("|cffaaaaaa/eal gbconsolidate|r |cff888866| |r|cffaaaaaa/eal gbc|r   |cff666666guild bank|r")
         GameTooltip:AddLine("|cffaaaaaa/eal reset|r   |cff666666clear whitelist|r")
         GameTooltip:AddLine("|cffaaaaaa/eal minimap|r   |cff666666show/hide button|r")
@@ -2843,13 +2984,43 @@ local function EAL_BuildGUI()
     sThumb:SetTexture(0.65, 0.45, 0.90, 0.9); sThumb:Hide()
     g_stashScrollThumb = sThumb
 
+    -- ---- Personal Bank sub-section (right column, above Guild Bank) -------
+    MakeHeader(pBank, L["PERSONAL BANK"], 380, -124)
+
+    local bankConsolidateBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
+    bankConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -146)
+    bankConsolidateBtn:SetWidth(220); bankConsolidateBtn:SetHeight(22)
+    bankConsolidateBtn:SetText("Consolidate Bank Stacks")
+    bankConsolidateBtn:SetScript("OnClick", function()
+        EAL_ConsolidatePersonalBank()
+    end)
+    MakeTooltipButton(bankConsolidateBtn, "|cffffd700Consolidate Bank Stacks|r", {
+        "|cffaaaaaaMerges partial stacks of the same item across|r",
+        "|cffaaaaaayour main bank (bag -1) and all bank-bag slots|r",
+        "|cffaaaaaa(bags 5..11).  Player bags 0..4 are not touched.|r",
+        " ",
+        "|cffff9900Open your bank first.|r  Also bound to",
+        "|cffffff00/eal bankconsolidate|r |cffaaaaaa(alias |r|cffffff00/eal bc|r|cffaaaaaa).|r",
+    })
+
+    local bcHint = pBank:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    bcHint:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -178)
+    bcHint:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -14, -178)
+    bcHint:SetJustifyH("LEFT")
+    bcHint:SetText("|cffaaaaaaMerges partial stacks in main bank + bank bags.|r")
+
+    -- Divider between PERSONAL BANK and GUILD BANK sections
+    local rightDivider = pBank:CreateTexture(nil, "ARTWORK")
+    rightDivider:SetPoint("TOPLEFT",  pBank, "TOPLEFT",  376, -200)
+    rightDivider:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -14,  -200)
+    rightDivider:SetHeight(1)
+    rightDivider:SetTexture(0.60, 0.40, 0.85, 0.85)
+
     -- ---- Guild Bank sub-section (right column in landscape) ---------------
-    -- v4.10.0: moved from below the stash scroll list into the right
-    -- column so everything fits within the new 520-tall window.
-    MakeHeader(pBank, L["GUILD BANK"], 380, -124)
+    MakeHeader(pBank, L["GUILD BANK"], 380, -214)
 
     local gbConsolidateBtn = CreateFrame("Button", nil, pBank, "GameMenuButtonTemplate")
-    gbConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -146)
+    gbConsolidateBtn:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -236)
     gbConsolidateBtn:SetWidth(220); gbConsolidateBtn:SetHeight(22)
     gbConsolidateBtn:SetText("Consolidate Stacks")
     gbConsolidateBtn:SetScript("OnClick", function()
@@ -2868,8 +3039,8 @@ local function EAL_BuildGUI()
     })
 
     local gbHint = pBank:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    gbHint:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -178)
-    gbHint:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -14, -178)
+    gbHint:SetPoint("TOPLEFT", pBank, "TOPLEFT", 380, -268)
+    gbHint:SetPoint("TOPRIGHT", pBank, "TOPRIGHT", -14, -268)
     gbHint:SetJustifyH("LEFT")
     gbHint:SetText("|cffaaaaaaOperates on the current GB tab.|r")
 
@@ -3037,6 +3208,7 @@ local function EAL_RegisterOptionsPanel()
         "  /eal deposit          - bank: deposit stash items\n" ..
         "  /eal mail             - mailbox: collect attachments + money\n" ..
         "  /eal cleanmail        - delete read empty mail\n" ..
+        "  /eal bankconsolidate  - personal bank: consolidate stacks\n" ..
         "  /eal gbconsolidate    - guild bank: consolidate stacks (current tab)\n" ..
         "  /eal reset            - clear whitelist (confirmation)\n" ..
         "  /eal minimap          - show / hide the minimap button\n" ..
@@ -3228,12 +3400,14 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         EAL_CleanReadMail()
     elseif cmd == "gbconsolidate" or cmd == "gbc" then
         EAL_ConsolidateGuildBankCurrentTab()
+    elseif cmd == "bankconsolidate" or cmd == "bc" then
+        EAL_ConsolidatePersonalBank()
     elseif cmd == "minimap" then
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | gbconsolidate | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | bankconsolidate | gbconsolidate | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()

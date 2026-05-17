@@ -1,5 +1,14 @@
 # Changelog — AutoLoot
 
+## [4.11.0] - 2026-05-18
+
+### Added — Personal bank stack consolidation
+- **New "PERSONAL BANK" section on the Bank tab** (right column, above the existing GUILD BANK section) with a `Consolidate Bank Stacks` button. One click merges every partial stack of the same item across your **main bank** (bag `-1`, 28 slots) **and all bank-bag slots** (bags `5..11`). Player bags `0..4` are never touched — this is bank-only.
+- **Slash command:** `/eal bankconsolidate` (alias `/eal bc`).
+- **Same algorithm as guild bank consolidation** (v4.7.0): rescan after every move, greedily merge smallest source into largest destination, attempted-pair dedup so silent failures don't infinite-loop. Personal bank operations are server-faster than guild bank ones, so the per-move delay is **0.2 s** vs 0.6 s for GB.
+- **Move primitive:** `SplitContainerItem(srcBag, srcSlot, amount)` to grab the exact count that fits in the destination, then `PickupContainerItem(dstBag, dstSlot)` to drop. No leftover handling needed. Defensive "anything still on cursor? put it back at source" path catches the rare swap-with-different-item case.
+- **Safety cap of 100 moves per run** (vs 60 for guild bank, since the personal bank's 280 max slots can plausibly have more partials than a 98-slot GB tab).
+
 ## [4.10.3] - 2026-05-18
 
 ### Fixed
