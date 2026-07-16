@@ -19,7 +19,7 @@
 -------------------------------------------------------------------------------
 
 local ADDON_NAME = "AutoLoot"
-local ADDON_VERSION = "4.11.0"
+local ADDON_VERSION = "4.12.0"
 local ADDON_AUTHOR  = "Veronica-Vasilieva"
 local ADDON_URL     = "https://github.com/Veronica-Vasilieva/AutoLoot"
 local ADDON_IDENT   = ADDON_NAME .. " v" .. ADDON_VERSION .. " by " .. ADDON_AUTHOR
@@ -122,6 +122,16 @@ local DEFAULTS = {
     -- accidental gold drain at unusually expensive repair vendors.
     repairCostCap    = 0,
 
+    -- Item family / subclass filter (v4.12+).  Overrides the quality
+    -- toggles for matching items.  Keyed by the localized subclass name
+    -- returned in GetItemInfo's `subType` field.  Values:
+    --   "keep" -- always skip, regardless of quality tick
+    --   "sell" -- always sell, regardless of quality tick
+    --   nil    -- default (quality tick decides)
+    -- Whitelist and price-cap still apply on top of this (a whitelisted
+    -- item is never sold, even if its family is set to "sell").
+    familyFilter     = {},
+
     -- Whitelist scope (union of account + per-character is used at runtime)
     blacklist        = {},        -- account-wide whitelist (name misnomer kept for back-compat)
 
@@ -173,6 +183,22 @@ local waitingForMerchant = false
 local wasMounted         = false
 local triggeredSellCycle = false -- true after StartSellCycle; reset on MERCHANT_CLOSED
 local bagUpdateDirty     = false -- set by BAG_UPDATE, consumed on next tick
+
+-- Deferred-sell latch: StartSellCycle sets this to true when it can't
+-- run right away (player mounted or in combat).  Cleared once the sell
+-- cycle actually kicks off in TryStartDeferredSell().
+local pendingSellCycle   = false
+
+-- Deferred-summon latch: SummonPet sets a pending target name when the
+-- critter list isn't populated yet (early PLAYER_LOGIN, or a companion
+-- learned mid-session).  Consumed on COMPANION_UPDATE.
+local pendingSummonName  = nil
+
+-- Bags-full lockout state: set by OnMerchantClosed when a sell cycle
+-- finishes with 0 free slots (BoP/quest junk filled the last slots).
+-- Instead of silently idling, we surface it to the user and offer a
+-- one-shot retry of the sell cycle.
+local bagsFullLockout    = false
 
 -- Money-delta measurement for a single sell session
 local sellSessionStartMoney = 0
@@ -285,6 +311,42 @@ local function IsBlacklisted(itemName)
     return false
 end
 
+-- Item family / subclass filter (v4.12+).  Curated list of subclasses that
+-- players commonly want to force-keep or force-sell regardless of the
+-- quality toggles.  The key is the localized subType string returned by
+-- GetItemInfo (English on Ebonhold; non-English clients will still work
+-- for the whitelist/quality path but the filter tab will show English
+-- labels here until the localized subclass table is wired up).
+--
+-- Order controls display order in the Filter tab.
+local FAMILY_CATEGORIES = {
+    { key = "Cloth",          label = "Cloth (trade good)",        icon = "Interface\\Icons\\INV_Fabric_Linen_01" },
+    { key = "Leather",        label = "Leather (trade good)",      icon = "Interface\\Icons\\INV_Misc_LeatherScrap_02" },
+    { key = "Metal & Stone",  label = "Metal & Stone (ores/bars)", icon = "Interface\\Icons\\INV_Ore_Copper_01" },
+    { key = "Herb",           label = "Herbs",                     icon = "Interface\\Icons\\INV_Misc_Herb_07" },
+    { key = "Elemental",      label = "Elemental (motes/eternals)",icon = "Interface\\Icons\\Spell_Nature_EarthElemental_Totem" },
+    { key = "Enchanting",     label = "Enchanting mats",           icon = "Interface\\Icons\\INV_Enchant_ShardStrangePrismatic" },
+    { key = "Jewelcrafting",  label = "Jewelcrafting (gems)",      icon = "Interface\\Icons\\INV_Misc_Gem_01" },
+    { key = "Meat",           label = "Meat / Fish",               icon = "Interface\\Icons\\INV_Misc_Fish_02" },
+    { key = "Food & Drink",   label = "Food & Drink",              icon = "Interface\\Icons\\INV_Misc_Food_15" },
+    { key = "Potion",         label = "Potions",                   icon = "Interface\\Icons\\INV_Potion_51" },
+    { key = "Elixir",         label = "Elixirs",                   icon = "Interface\\Icons\\INV_Potion_43" },
+    { key = "Flask",          label = "Flasks",                    icon = "Interface\\Icons\\INV_Potion_62" },
+    { key = "Bandage",        label = "Bandages",                  icon = "Interface\\Icons\\INV_Misc_Bandage_15" },
+    { key = "Scroll",         label = "Scrolls",                   icon = "Interface\\Icons\\INV_Scroll_02" },
+    { key = "Junk",           label = "Junk (Miscellaneous)",      icon = "Interface\\Icons\\INV_Misc_QuestionMark" },
+    { key = "Glyph",          label = "Glyphs",                    icon = "Interface\\Icons\\INV_Inscription_Tradeskill01" },
+}
+
+-- Decision for a given item.  Returns "keep", "sell", or nil (no rule).
+-- itemSubType comes from GetItemInfo's 7th return.
+local function GetItemFamilyDecision(itemSubType)
+    if not itemSubType or itemSubType == "" then return nil end
+    local map = EAL_DB and EAL_DB.familyFilter
+    if not map then return nil end
+    return map[itemSubType]
+end
+
 -- True when the item is listed in either the account-wide or per-character
 -- stash list (Bank tab). Used by EAL_DepositStashItems on BANKFRAME_OPENED.
 local function IsInStashList(itemName)
@@ -346,13 +408,19 @@ end
 local function SummonPet(name)
     local idx, active = FindCompanion(name)
     if not idx then
-        Print("Companion '" .. (name or "?") .. "' not found in your companion list.", 1, 0.3, 0.3)
+        -- Critter list may not be populated yet (PLAYER_LOGIN fires before
+        -- COMPANION_UPDATE).  Latch the pending target; the COMPANION_UPDATE
+        -- handler retries the summon once the list arrives.  Only warn the
+        -- user if they've already been idle a while and still no match.
+        pendingSummonName = name
+        Print("Companion '" .. (name or "?") .. "' not found - will retry when companion list loads.", 1, 0.3, 0.3)
         return false
     end
     if not active then
         CallCompanion("CRITTER", idx)
         Print("Summoning " .. name .. "...")
     end
+    pendingSummonName = nil   -- succeeded; clear any pending retry
     return true
 end
 
@@ -366,13 +434,20 @@ local function IsPlayerMountedOrFlying()
     return false
 end
 
-local function GetCompanionDistance()
-    if not UnitPosition then return nil end
-    local px, py = UnitPosition("player")
-    local cx, cy = UnitPosition("pet")
-    if not px or not cx then return nil end
-    local dx, dy = px - cx, py - cy
-    return math.sqrt(dx * dx + dy * dy)
+-- True if the companion we EXPECTED to be summoned (loot pet during
+-- S_LOOTING, vendor pet during S_SELLING) is not currently active in
+-- the critter list.  UnitPosition("pet") refers to the combat pet
+-- (Hunter/Warlock) in 3.3.5a, NOT to a summoned companion critter, so
+-- distance-based stuck detection was silently broken.  Using the
+-- companion list's summoned flag is authoritative.
+local function IsExpectedCompanionActive()
+    local expected
+    if     currentState == S_LOOTING then expected = EAL_DB and EAL_DB.lootCompanion
+    elseif currentState == S_SELLING then expected = EAL_DB and EAL_DB.vendorCompanion
+    end
+    if not expected or expected == "" then return true end
+    local _, active = FindCompanion(expected)
+    return active
 end
 
 -------------------------------------------------------------------------------
@@ -554,11 +629,15 @@ local function EAL_ScanLowILvlGear(threshold)
         for slot = 1, numSlots do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                local name, _, _, iLevel, _, _, _, _, equipLoc, _, sellPrice = GetItemInfo(link)
+                local name, _, _, iLevel, _, _, subType, _, equipLoc, _, sellPrice = GetItemInfo(link)
+                -- Family filter overrides the low-iLvl scan too: an item
+                -- explicitly marked "keep" is skipped even if under threshold.
+                local famDecision = GetItemFamilyDecision(subType)
                 if name and iLevel and iLevel > 0 and iLevel <= threshold
                    and equipLoc and equipLoc ~= ""
                    and sellPrice and sellPrice > 0
                    and (priceMax == 0 or sellPrice <= priceMax)
+                   and famDecision ~= "keep"
                    and not IsBlacklisted(name) then
                     local _, count = GetContainerItemInfo(bag, slot)
                     count = count or 1
@@ -700,14 +779,26 @@ local function SellItems(totalSold, totalSkipped)
         for slot = 1, numSlots do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                local name, _, quality, _, _, _, _, _, _, _, sellPrice = GetItemInfo(link)
+                local name, _, quality, _, _, _, subType, _, _, _, sellPrice = GetItemInfo(link)
                 if quality and name then
-                    local sell =
-                        (quality == Q_GREY     and EAL_DB.sellGrey)     or
-                        (quality == Q_WHITE    and EAL_DB.sellWhite)    or
-                        (quality == Q_UNCOMMON and EAL_DB.sellUncommon) or
-                        (quality == Q_RARE     and EAL_DB.sellRare)     or
-                        (quality == Q_EPIC     and EAL_DB.sellEpic)
+                    -- Family-filter check first; a "keep" decision always
+                    -- wins and a "sell" decision forces the sale (still
+                    -- subject to whitelist + price-cap safety below).
+                    local famDecision = GetItemFamilyDecision(subType)
+                    local sell
+                    if famDecision == "keep" then
+                        sell = false
+                        skipped = skipped + 1
+                    elseif famDecision == "sell" then
+                        sell = (sellPrice and sellPrice > 0) and true or false
+                    else
+                        sell =
+                            (quality == Q_GREY     and EAL_DB.sellGrey)     or
+                            (quality == Q_WHITE    and EAL_DB.sellWhite)    or
+                            (quality == Q_UNCOMMON and EAL_DB.sellUncommon) or
+                            (quality == Q_RARE     and EAL_DB.sellRare)     or
+                            (quality == Q_EPIC     and EAL_DB.sellEpic)
+                    end
 
                     if sell and IsBlacklisted(name) then
                         sell = false
@@ -768,6 +859,25 @@ end
 
 local function StartSellCycle()
     if currentState == S_SELLING then return end
+
+    -- Defer while mounted or in combat.  StartSellCycle was previously
+    -- willing to dismiss the loot pet and start summoning the vendor pet
+    -- mid-mount, which the mount-watcher would then immediately undo --
+    -- producing a 1.5s summon-and-dismiss dance.  Latch the pending sell
+    -- and consume it in the mount watcher / PLAYER_REGEN_ENABLED handler.
+    if IsPlayerMountedOrFlying() then
+        pendingSellCycle = true
+        Print("Bags full - sell cycle will start when you dismount.", 1, 0.75, 0.2)
+        return
+    end
+    if InCombatLockdown() then
+        pendingSellCycle = true
+        Print("Bags full - sell cycle will start when combat ends.", 1, 0.75, 0.2)
+        return
+    end
+
+    pendingSellCycle = false
+    bagsFullLockout  = false
     SetState(S_SELLING)
     triggeredSellCycle = true
     Print("Bags full - summoning " .. EAL_DB.vendorCompanion .. "...")
@@ -791,6 +901,19 @@ local function StartSellCycle()
             end)
         end
     end)
+end
+
+-- Consumed by the mount watcher and PLAYER_REGEN_ENABLED handler when
+-- the earlier StartSellCycle call was deferred.  Kept alongside
+-- StartSellCycle so both live near the state-machine transitions.
+local function TryStartDeferredSell()
+    if not pendingSellCycle then return end
+    if not EAL_DB or not EAL_DB.enabled then
+        pendingSellCycle = false; return
+    end
+    if IsPlayerMountedOrFlying() or InCombatLockdown() then return end
+    -- Clear inside StartSellCycle after it commits to running.
+    StartSellCycle()
 end
 
 -- Fired on MERCHANT_SHOW. Only acts when we triggered the sell cycle OR
@@ -830,25 +953,43 @@ local function OnMerchantClosed()
     if currentState == S_SELLING then
         local free = GetTotalFreeSlots()
         if EAL_DB.enabled and free > 0 then
+            bagsFullLockout = false
             After(1, StartLootCycle)
+        elseif EAL_DB.enabled and free == 0 then
+            -- Pre-4.12 this silently transitioned to IDLE and the user was
+            -- stuck with full bags and no message.  Now surface it and
+            -- offer a manual retry.  We do NOT auto-loop; likely the last
+            -- slots are BoP quest/soulbound junk that no vendor can take,
+            -- so a blind retry would burn merchant summons forever.
+            bagsFullLockout = true
+            SetState(S_IDLE)
+            PlayAlertSound()
+            Print("|cffff4444Bags still full after selling.|r Likely soulbound / quest items.")
+            Print("|cffaaaaaaClear a slot manually, then |cffffff00/eal|r resumes automatically.|r" ..
+                  "  Or |cffffff00/eal sell|r to try again.")
         else
             SetState(S_IDLE)
         end
     end
 end
 
+-- Companion may despawn on its own (out of range, world change, server
+-- hiccup).  When it does, GetCompanionInfo's summoned flag flips false
+-- while we're still in S_LOOTING / S_SELLING, so we re-summon.  This is
+-- the fix for the pre-4.12 pet-distance check that used UnitPosition("pet")
+-- (which refers to combat pets in 3.3.5a, never to critter companions).
 local function CheckCompanionStuck()
     if IsPlayerMountedOrFlying() then return end
-    local dist = GetCompanionDistance()
-    if dist == nil then return end
-    if dist > MAX_COMPANION_DISTANCE then
-        Print("Greedy Scavenger is stuck (" .. math.floor(dist) ..
-              " yds away) - resummoning...", 1, 0.75, 0.2)
-        DismissPet()
-        After(0.5, function()
-            SummonPet(EAL_DB.lootCompanion)
-        end)
-    end
+    if currentState ~= S_LOOTING and currentState ~= S_SELLING then return end
+    if IsExpectedCompanionActive() then return end
+
+    local target
+    if currentState == S_LOOTING then target = EAL_DB.lootCompanion
+    else                              target = EAL_DB.vendorCompanion end
+    if not target or target == "" then return end
+
+    Print(target .. " despawned - resummoning...", 1, 0.75, 0.2)
+    SummonPet(target)
 end
 
 -- OPT-IN: Scans bags for items with NO vendor price whose quality is in the
@@ -873,9 +1014,12 @@ end
 -- the current settings.  Grey is special-cased to ignore the vendor-price
 -- filter (delete ALL greys when configured); other qualities only delete
 -- when the item has no vendor price.
-local function EAL_ShouldAutoDelete(quality, vendorPrice, name)
+local function EAL_ShouldAutoDelete(quality, vendorPrice, name, subType)
     if not EAL_IsAutoDeleteQuality(quality) then return false end
     if name and IsBlacklisted(name) then return false end
+    -- Family filter "keep" overrides auto-delete too, so users can safely
+    -- turn on "delete greys" while keeping specific families like Herbs.
+    if GetItemFamilyDecision(subType) == "keep" then return false end
     if quality == Q_GREY then
         return true   -- delete all greys regardless of vendor price
     end
@@ -894,8 +1038,8 @@ local function EAL_DeleteUnsellableItems()
         for slot = 1, numSlots do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
-                if name and EAL_ShouldAutoDelete(quality, vendorPrice, name) then
+                local name, _, quality, _, _, _, subType, _, _, _, vendorPrice = GetItemInfo(link)
+                if name and EAL_ShouldAutoDelete(quality, vendorPrice, name, subType) then
                     table.insert(toDelete, { bag = bag, slot = slot, quality = quality })
                 end
             end
@@ -916,8 +1060,8 @@ local function EAL_DeleteUnsellableItems()
         local item = toDelete[idx]
         local link = GetContainerItemLink(item.bag, item.slot)
         if link then
-            local name, _, quality, _, _, _, _, _, _, _, vendorPrice = GetItemInfo(link)
-            if name and EAL_ShouldAutoDelete(quality, vendorPrice, name) then
+            local name, _, quality, _, _, _, subType, _, _, _, vendorPrice = GetItemInfo(link)
+            if name and EAL_ShouldAutoDelete(quality, vendorPrice, name, subType) then
                 ClearCursor()
                 PickupContainerItem(item.bag, item.slot)
                 DeleteCursorItem()
@@ -1599,6 +1743,175 @@ HandleModifiedItemClick = function(link, ...)
     return _origHandleModifiedItemClick(link, ...)
 end
 
+-------------------------------------------------------------------------------
+-- Whitelist import / export  (v4.12)
+--
+-- Format: plain-text, human-readable, no compression / base64.  Item names
+-- can contain spaces, apostrophes, accented characters, colons ("Tome of
+-- Echo:") etc., but never `|` or newlines, so we use `|` as the separator.
+--
+--   EBWL:v1:A:name1|name2|...::C:name1|name2|...
+--
+-- Both scope sections are optional; missing scope = empty section.
+-- Parser is lenient: whitespace around names is trimmed and empty names
+-- are dropped so a trailing `|` never causes an empty entry.
+-------------------------------------------------------------------------------
+local WHITELIST_EXPORT_VERSION = "v1"
+local WHITELIST_EXPORT_PREFIX  = "EBWL:" .. WHITELIST_EXPORT_VERSION .. ":"
+
+local function EAL_ExportWhitelist()
+    local acct = (EAL_DB and EAL_DB.blacklist) or {}
+    local char = (EAL_CDB and EAL_CDB.blacklist) or {}
+    return WHITELIST_EXPORT_PREFIX ..
+           "A:" .. table.concat(acct, "|") ..
+           "::" ..
+           "C:" .. table.concat(char, "|")
+end
+
+-- Parses str; returns (acctList, charList) or (nil, errMsg).
+local function EAL_ParseWhitelistString(str)
+    if type(str) ~= "string" then return nil, "empty input" end
+    str = str:match("^%s*(.-)%s*$") or ""
+    if str == "" then return nil, "empty input" end
+    if str:sub(1, #WHITELIST_EXPORT_PREFIX) ~= WHITELIST_EXPORT_PREFIX then
+        return nil, "not an EBWL export string"
+    end
+    local body = str:sub(#WHITELIST_EXPORT_PREFIX + 1)
+    -- Split on `::` to get the two scope sections.
+    local acctSection, charSection = body:match("^(.-)::(.*)$")
+    if not acctSection then
+        -- Older or single-scope form: treat entire body as one section.
+        acctSection = body; charSection = ""
+    end
+    local function _parseSection(sec, tag)
+        local names = {}
+        local payload = sec:match("^" .. tag .. ":(.*)$") or ""
+        for entry in payload:gmatch("([^|]+)") do
+            local n = entry:match("^%s*(.-)%s*$")
+            if n and n ~= "" then table.insert(names, n) end
+        end
+        return names
+    end
+    return _parseSection(acctSection, "A"), _parseSection(charSection, "C")
+end
+
+-- Merges parsed lists into the live tables.  Returns (addedAcct, addedChar,
+-- skippedDupes).  Uses IsBlacklisted for the dupe check so an entry that
+-- already exists in either scope isn't re-added.
+local function EAL_ImportWhitelist(str)
+    local acct, char = EAL_ParseWhitelistString(str)
+    if not acct then return nil, char end   -- char is the error message here
+    local addedA, addedC, skipped = 0, 0, 0
+    for _, name in ipairs(acct) do
+        if IsBlacklisted(name) then skipped = skipped + 1
+        else table.insert(EAL_DB.blacklist, name); addedA = addedA + 1 end
+    end
+    for _, name in ipairs(char) do
+        if IsBlacklisted(name) then skipped = skipped + 1
+        else table.insert(EAL_CDB.blacklist, name); addedC = addedC + 1 end
+    end
+    if EAL_RefreshBlacklist then EAL_RefreshBlacklist() end
+    return addedA, addedC, skipped
+end
+
+-- Popup window (lazy-built on first use).  One frame is reused for both
+-- export (read-only text) and import (editable text).
+local g_whitelistIOFrame
+
+local function EAL_ShowWhitelistIO(mode)
+    if not g_whitelistIOFrame then
+        local f = CreateFrame("Frame", "EAL_WhitelistIOFrame", UIParent)
+        f:SetSize(480, 260)
+        f:SetPoint("CENTER")
+        f:SetFrameStrata("DIALOG")
+        f:SetMovable(true); f:EnableMouse(true); f:RegisterForDrag("LeftButton")
+        f:SetScript("OnDragStart", f.StartMoving)
+        f:SetScript("OnDragStop",  f.StopMovingOrSizing)
+        f:SetBackdrop({
+            bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+            tile = true, tileSize = 32, edgeSize = 32,
+            insets = { left = 8, right = 8, top = 8, bottom = 8 },
+        })
+        f:SetBackdropColor(0.10, 0.06, 0.18, 0.95)
+        f:SetBackdropBorderColor(0.75, 0.55, 0.95, 1)
+
+        local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOP", 0, -14)
+        f.title = title
+
+        local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        hint:SetPoint("TOP", 0, -36)
+        hint:SetJustifyH("CENTER")
+        f.hint = hint
+
+        local sf = CreateFrame("ScrollFrame", "EAL_WhitelistIOScroll", f, "UIPanelScrollFrameTemplate")
+        sf:SetPoint("TOPLEFT",     f, "TOPLEFT",      14,  -60)
+        sf:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -32,   46)
+        local edit = CreateFrame("EditBox", nil, sf)
+        edit:SetMultiLine(true)
+        edit:SetFontObject("ChatFontNormal")
+        edit:SetAutoFocus(false)
+        edit:SetWidth(420)
+        -- 3.3.5a EditBox default cap is 255; a large explicit limit is
+        -- safer than passing 0 which some builds treat as "no input".
+        edit:SetMaxLetters(50000)
+        edit:SetScript("OnEscapePressed", function() f:Hide() end)
+        sf:SetScrollChild(edit)
+        f.edit = edit
+
+        local go = CreateFrame("Button", nil, f, "GameMenuButtonTemplate")
+        go:SetSize(120, 22); go:SetPoint("BOTTOMLEFT", 18, 14)
+        f.goBtn = go
+
+        local close = CreateFrame("Button", nil, f, "GameMenuButtonTemplate")
+        close:SetSize(80, 22); close:SetPoint("BOTTOMRIGHT", -18, 14)
+        close:SetText("Close")
+        close:SetScript("OnClick", function() f:Hide() end)
+
+        g_whitelistIOFrame = f
+    end
+
+    local f = g_whitelistIOFrame
+    f.edit:SetScript("OnTextChanged", nil)   -- clear any prior handler
+    if mode == "export" then
+        local str = EAL_ExportWhitelist()
+        local acct = (EAL_DB and EAL_DB.blacklist) or {}
+        local char = (EAL_CDB and EAL_CDB.blacklist) or {}
+        f.title:SetText("|cffffd700Export Whitelist|r")
+        f.hint:SetText("|cffaaaaaaCtrl+A to select all, Ctrl+C to copy.  " ..
+                        #acct .. " account + " .. #char .. " character entries.|r")
+        f.edit:SetText(str)
+        f.edit:SetFocus()
+        f.edit:HighlightText()
+        f.goBtn:SetText("Copy")
+        f.goBtn:SetScript("OnClick", function()
+            f.edit:SetFocus(); f.edit:HighlightText()
+            Print("Highlighted. Press |cffffff00Ctrl+C|r to copy.")
+        end)
+    else   -- import
+        f.title:SetText("|cffffd700Import Whitelist|r")
+        f.hint:SetText("|cffaaaaaaPaste an EBWL:v1:... string.  Entries merge; duplicates skipped.|r")
+        f.edit:SetText("")
+        f.edit:SetFocus()
+        f.goBtn:SetText("Import")
+        f.goBtn:SetScript("OnClick", function()
+            local raw = f.edit:GetText()
+            local a, c, s = EAL_ImportWhitelist(raw)
+            if not a then
+                Print("|cffff4444Import failed:|r " .. tostring(c))
+            else
+                Print("Whitelist import: |cffb9ff99+" .. a .. "|r account, " ..
+                      "|cff87ceeb+" .. c .. "|r character, " ..
+                      "|cffaaaaaa" .. s .. "|r duplicates skipped.")
+                f:Hide()
+            end
+        end)
+    end
+
+    f:Show()
+end
+
 -- Mount state watcher + companion stuck check. Bag fullness is driven by
 -- BAG_UPDATE (see event handler) so OnUpdate no longer polls bags.
 local function OnUpdate(self, elapsed)
@@ -1622,17 +1935,26 @@ local function OnUpdate(self, elapsed)
                     waitingForMerchant = true
                     After(1.5, function() SummonPet(EAL_DB.vendorCompanion) end)
                 end
+                -- Consume any sell cycle that was deferred while we were
+                -- mounted (StartSellCycle would have set pendingSellCycle).
+                if pendingSellCycle then
+                    After(1.5, TryStartDeferredSell)
+                end
             end
         end
     end
 
-    -- Stuck check: share the timer interval, skip while mounted.
-    if EAL_DB.enabled and currentState == S_LOOTING and not nowMounted then
+    -- Stuck check: share the timer interval, skip while mounted.  Runs in
+    -- both LOOTING and SELLING states so a despawned vendor pet is caught
+    -- while waiting for the player to interact with the merchant.  The
+    -- auto-delete unsellable pass is LOOTING-only (never fires mid-sell).
+    if EAL_DB.enabled and not nowMounted
+       and (currentState == S_LOOTING or currentState == S_SELLING) then
         bagCheckTimer = bagCheckTimer + elapsed
         if bagCheckTimer >= (EAL_DB.checkInterval or 3) then
             bagCheckTimer = 0
             EAL_UpdateStatus()
-            EAL_DeleteUnsellableItems()
+            if currentState == S_LOOTING then EAL_DeleteUnsellableItems() end
             CheckCompanionStuck()
         end
     end
@@ -1645,6 +1967,14 @@ local function OnUpdate(self, elapsed)
             if GetTotalFreeSlots() == 0 then
                 StartSellCycle()
             end
+        end
+        -- Bags-full lockout: player has manually freed a slot after we
+        -- stopped due to unsellable junk.  Resume looting automatically.
+        if bagsFullLockout and EAL_DB.enabled and currentState == S_IDLE
+           and GetTotalFreeSlots() > 0 then
+            bagsFullLockout = false
+            Print("|cff44ff44Free slot detected - resuming loot cycle.|r")
+            StartLootCycle()
         end
     end
 end
@@ -2120,11 +2450,14 @@ local function EAL_BuildGUI()
         { key = "whitelist", label = L["Whitelist"] },
         { key = "bank",      label = L["Bank"]      },
         { key = "mail",      label = L["Mail"]      },
+        -- v4.12: item-family / subclass filter.  Added at the end so
+        -- existing lastTab indices stay stable (no migration needed).
+        { key = "filter",    label = L["Filter"]    },
     }
     -- Tab-index constants -- update these in lockstep with tabDefs.
     -- Used in the drag-drop/Ctrl+Shift+Click router below.
     local TAB_GENERAL, TAB_SELL = 1, 2
-    local TAB_WHITELIST, TAB_BANK, TAB_MAIL = 3, 4, 5
+    local TAB_WHITELIST, TAB_BANK, TAB_MAIL, TAB_FILTER = 3, 4, 5, 6
 
     local panels = {}
     local tabBtns = {}
@@ -2240,6 +2573,7 @@ local function EAL_BuildGUI()
     local pWhitelist = panels[TAB_WHITELIST]
     local pBank      = panels[TAB_BANK]
     local pMail      = panels[TAB_MAIL]
+    local pFilter    = panels[TAB_FILTER]
 
     -------------------------------------------------------------------------
     -- Tab 1: GENERAL
@@ -2739,6 +3073,29 @@ local function EAL_BuildGUI()
         "|cffff9900Confirmation required.|r",
     })
 
+    -- v4.12: import/export.  Sits in the right column so the tome button
+    -- keeps its full-width look on the left.
+    local exportBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    exportBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 366, -172)
+    exportBtn:SetWidth(120); exportBtn:SetHeight(22); exportBtn:SetText("Export...")
+    exportBtn:SetScript("OnClick", function() EAL_ShowWhitelistIO("export") end)
+    MakeTooltipButton(exportBtn, "|cffffd700Export Whitelist|r", {
+        "|cffaaaaaaOpens a window with a copy-pasteable string|r",
+        "|cffaaaaaacontaining every account + character entry.|r",
+        "|cffaaaaaaShare on Discord or paste into an alt to|r",
+        "|cffaaaaaamigrate whitelists between characters.|r",
+    })
+
+    local importBtn = CreateFrame("Button", nil, pWhitelist, "GameMenuButtonTemplate")
+    importBtn:SetPoint("TOPLEFT", pWhitelist, "TOPLEFT", 490, -172)
+    importBtn:SetWidth(120); importBtn:SetHeight(22); importBtn:SetText("Import...")
+    importBtn:SetScript("OnClick", function() EAL_ShowWhitelistIO("import") end)
+    MakeTooltipButton(importBtn, "|cffffd700Import Whitelist|r", {
+        "|cffaaaaaaPaste an EBWL:v1:... string.  Entries are|r",
+        "|cffaaaaaamerged into your existing whitelist; any|r",
+        "|cffaaaaaaduplicates are silently skipped.|r",
+    })
+
     -- Scrollable whitelist
     local TRACK_W = 8
     local listBg = CreateFrame("Frame", nil, pWhitelist)
@@ -3146,6 +3503,116 @@ local function EAL_BuildGUI()
     mailCodHint:SetJustifyH("LEFT")
     mailCodHint:SetText("|cffaaaaaaCOD mail is always skipped \226\128\148 you'll never accidentally pay one.|r")
 
+    -------------------------------------------------------------------------
+    -- Tab 6: FILTER  (v4.12)
+    -- Per-subclass "always keep" / "always sell" rules that override the
+    -- quality toggles.  Whitelist and price-cap still apply on top.  Two
+    -- columns of category rows; each row is [icon] [label] [Keep] [Sell].
+    -- The buttons are latched: clicking an already-active state clears it.
+    -------------------------------------------------------------------------
+    MakeHeader(pFilter, "ITEM FAMILY FILTER  |cffb9b9b9(overrides quality ticks)|r", 18, -124)
+
+    local filterHint = pFilter:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    filterHint:SetPoint("TOPLEFT", pFilter, "TOPLEFT", 18, -142)
+    filterHint:SetPoint("TOPRIGHT", pFilter, "TOPRIGHT", -18, -142)
+    filterHint:SetJustifyH("LEFT")
+    filterHint:SetText("|cffaaaaaa|cffb9ff99Keep|r = never sell this family.  " ..
+                        "|cffff9955Sell|r = force-sell (needs vendor price).  " ..
+                        "Whitelist still wins.|r")
+
+    EAL_DB.familyFilter = EAL_DB.familyFilter or {}
+
+    local ROW_H     = 26
+    local COL_X     = { 14, 366 }   -- left / right column starts
+    local COL_W     = 340           -- each column's width
+    local ROW_Y0    = -164
+
+    local filterButtons = {}   -- key -> { keepBtn, sellBtn }
+
+    local function RefreshFilterRow(key)
+        local pair = filterButtons[key]
+        if not pair then return end
+        local decision = EAL_DB.familyFilter[key]
+        -- Latched appearance: use LockHighlight when active.
+        if decision == "keep" then pair.keepBtn:LockHighlight() else pair.keepBtn:UnlockHighlight() end
+        if decision == "sell" then pair.sellBtn:LockHighlight() else pair.sellBtn:UnlockHighlight() end
+    end
+
+    for i, cat in ipairs(FAMILY_CATEGORIES) do
+        local col = ((i - 1) % 2) + 1        -- 1 or 2
+        local row = math.floor((i - 1) / 2)
+        local rowFrame = CreateFrame("Frame", nil, pFilter)
+        rowFrame:SetWidth(COL_W); rowFrame:SetHeight(ROW_H)
+        rowFrame:SetPoint("TOPLEFT", pFilter, "TOPLEFT",
+                          COL_X[col], ROW_Y0 - row * ROW_H)
+
+        local rowBg = rowFrame:CreateTexture(nil, "BACKGROUND")
+        rowBg:SetAllPoints()
+        rowBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+        if row % 2 == 0 then rowBg:SetVertexColor(0.12, 0.10, 0.18, 0.55)
+        else                 rowBg:SetVertexColor(0.08, 0.06, 0.14, 0.55) end
+
+        local icon = rowFrame:CreateTexture(nil, "ARTWORK")
+        icon:SetTexture(cat.icon)
+        icon:SetSize(20, 20)
+        icon:SetPoint("LEFT", 4, 0)
+        icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+        local lbl = rowFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lbl:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+        lbl:SetWidth(180); lbl:SetJustifyH("LEFT"); lbl:SetWordWrap(false)
+        lbl:SetText(cat.label)
+
+        local keepBtn = CreateFrame("Button", nil, rowFrame, "UIPanelButtonTemplate")
+        keepBtn:SetSize(58, 20)
+        keepBtn:SetPoint("RIGHT", -66, 0)
+        keepBtn:SetText("Keep")
+        keepBtn:GetNormalFontObject():SetTextColor(0.72, 1.00, 0.60)
+        local sellBtn = CreateFrame("Button", nil, rowFrame, "UIPanelButtonTemplate")
+        sellBtn:SetSize(58, 20)
+        sellBtn:SetPoint("RIGHT", -4, 0)
+        sellBtn:SetText("Sell")
+        sellBtn:GetNormalFontObject():SetTextColor(1.00, 0.60, 0.35)
+
+        local capturedKey = cat.key
+        keepBtn:SetScript("OnClick", function()
+            if EAL_DB.familyFilter[capturedKey] == "keep" then
+                EAL_DB.familyFilter[capturedKey] = nil
+            else
+                EAL_DB.familyFilter[capturedKey] = "keep"
+            end
+            RefreshFilterRow(capturedKey)
+        end)
+        sellBtn:SetScript("OnClick", function()
+            if EAL_DB.familyFilter[capturedKey] == "sell" then
+                EAL_DB.familyFilter[capturedKey] = nil
+            else
+                EAL_DB.familyFilter[capturedKey] = "sell"
+            end
+            RefreshFilterRow(capturedKey)
+        end)
+
+        filterButtons[capturedKey] = { keepBtn = keepBtn, sellBtn = sellBtn }
+        RefreshFilterRow(capturedKey)
+    end
+
+    -- Clear-all button below the grid
+    local clearFiltersBtn = CreateFrame("Button", nil, pFilter, "GameMenuButtonTemplate")
+    clearFiltersBtn:SetPoint("BOTTOMLEFT", pFilter, "BOTTOMLEFT", 18, 32)
+    clearFiltersBtn:SetSize(180, 22)
+    clearFiltersBtn:SetText("Clear All Filter Rules")
+    clearFiltersBtn:GetNormalFontObject():SetTextColor(1, 0.55, 0.35)
+    clearFiltersBtn:SetScript("OnClick", function()
+        EAL_DB.familyFilter = {}
+        for _, cat in ipairs(FAMILY_CATEGORIES) do RefreshFilterRow(cat.key) end
+        Print("Family filter rules cleared.")
+    end)
+    MakeTooltipButton(clearFiltersBtn, "|cffff8855Clear All Filter Rules|r", {
+        "|cffaaaaaaRemoves all Keep/Sell family overrides.|r",
+        "|cffaaaaaaThe quality ticks on the Sell tab take|r",
+        "|cffaaaaaaover again for every item family.|r",
+    })
+
     -- Bottom hint (always visible across tabs)
     local hint = win:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     hint:SetPoint("BOTTOM", 0, 14)
@@ -3321,6 +3788,13 @@ eventFrame:RegisterEvent("MERCHANT_CLOSED")
 eventFrame:RegisterEvent("BAG_UPDATE")
 eventFrame:RegisterEvent("BANKFRAME_OPENED")
 eventFrame:RegisterEvent("MAIL_SHOW")
+-- v4.12: react to the critter list finishing loading (early PLAYER_LOGIN
+-- races cause "Companion 'X' not found" if we try to summon before the
+-- companion list is populated) and to combat-end (so sell cycles
+-- deferred while in combat can resume).
+eventFrame:RegisterEvent("COMPANION_UPDATE")
+eventFrame:RegisterEvent("COMPANION_LEARNED")
+eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -3354,6 +3828,21 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Inbox isn't necessarily populated on the same frame as MAIL_SHOW;
         -- 0.4s gives it time to settle before we start walking entries.
         After(0.4, function() EAL_AutoCollectMail(false) end)
+
+    elseif event == "COMPANION_UPDATE" or event == "COMPANION_LEARNED" then
+        -- Retry any summon that failed because the critter list was empty.
+        if pendingSummonName and EAL_DB and EAL_DB.enabled then
+            local name = pendingSummonName
+            pendingSummonName = nil   -- SummonPet re-latches on failure
+            SummonPet(name)
+        end
+
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        -- Combat ended.  Any sell cycle that StartSellCycle deferred can
+        -- now fire.  Small delay so BAG_UPDATE from combat looting settles.
+        if pendingSellCycle then
+            After(0.5, TryStartDeferredSell)
+        end
     end
 end)
 
@@ -3406,8 +3895,12 @@ SlashCmdList["EBAUTOLOOT"] = function(msg)
         EAL_DB.showMinimapButton = not EAL_DB.showMinimapButton
         UpdateMinimapButton()
         Print("Minimap button: " .. (EAL_DB.showMinimapButton and "|cff44ff44shown|r" or "|cffaaaaaahidden|r"))
+    elseif cmd == "export" then
+        EAL_ShowWhitelistIO("export")
+    elseif cmd == "import" then
+        EAL_ShowWhitelistIO("import")
     elseif cmd == "help" or cmd == "?" then
-        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | bankconsolidate | gbconsolidate | reset | minimap | help")
+        Print("Commands: toggle | enable | disable | sell | ilvlsell | deposit | mail | cleanmail | bankconsolidate | gbconsolidate | export | import | reset | minimap | help")
     else
         if g_optionsFrame:IsShown() then
             g_optionsFrame:Hide()

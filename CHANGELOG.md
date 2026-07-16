@@ -1,5 +1,32 @@
 # Changelog — AutoLoot
 
+## [4.12.0] - 2026-07-16
+
+### Fixed — companion sequencing bugs
+- **Companion stuck detection now actually works.** Pre-4.12 the check compared `UnitPosition("player")` against `UnitPosition("pet")`, but in WoW 3.3.5a `pet` refers to the **combat pet** (Hunter pet / Warlock demon), not to a summoned companion critter. On non-Hunter/Warlock the position check returned `nil` and silently no-oped; on classes with a combat pet it measured the wrong unit entirely. The new check reads the `summoned` flag from `GetCompanionInfo("CRITTER", idx)` for the currently-expected pet (loot pet in `S_LOOTING`, vendor pet in `S_SELLING`) — if it despawns while we still need it, we resummon. Also extended the check to run in `S_SELLING`, so a vendor pet that despawns while the player is walking over to it gets re-called.
+- **`StartLootCycle` no longer silently gives up when the critter list hasn't loaded yet.** `PLAYER_LOGIN` fires before `COMPANION_UPDATE`, so if the addon was enabled at load and something triggered a summon on the first frame, `FindCompanion` returned nil and printed "Companion 'X' not found" with no retry. `SummonPet` now latches the pending target name and retries automatically on the next `COMPANION_UPDATE` / `COMPANION_LEARNED`.
+- **Bags-full deadlock.** When a sell cycle finished with 0 free slots (BoP soulbound or quest items filled the last few slots and were correctly skipped), `OnMerchantClosed` silently transitioned to `S_IDLE` with no message — from the user's perspective the addon "just stopped." Now surfaces a `|cffff4444Bags still full|r` warning with the reason, plays the alert sound, and enters a lockout state that auto-resumes looting the moment the player manually clears a slot (via `BAG_UPDATE`).
+- **`StartSellCycle` no longer fires mid-mount or mid-combat.** Pre-4.12 it dismissed the loot pet and started summoning the vendor pet even when mounted; the mount watcher would then immediately dismiss the summon 1.5s later, producing a jarring summon-and-dismiss dance. `StartSellCycle` now defers via a `pendingSellCycle` latch consumed by the mount watcher (on dismount) and by a new `PLAYER_REGEN_ENABLED` handler (on combat end).
+
+### Added — item family / subclass filter
+- **New "Filter" tab** (6th tab, at the end so existing `lastTab` indices stay stable — no migration).
+- **Per-subclass Keep / Sell overrides.** 16 curated categories (Cloth, Leather, Metal & Stone, Herb, Elemental, Enchanting mats, Jewelcrafting, Meat/Fish, Food & Drink, Potion, Elixir, Flask, Bandage, Scroll, Junk, Glyph) each with three-state control: **default** (quality tick decides), **Keep** (always skip regardless of quality tick), **Sell** (force-sell regardless of quality tick — still needs a vendor price).
+- **Precedence.** Filter is checked BEFORE the quality toggles. Whitelist and price-cap still win on top ("Keep" is redundant with a whitelist entry; "Sell" is overridden if the item is whitelisted or exceeds the sell-price cap). Applies to the auto sell cycle, the quick-sell-by-iLvl scan, and the auto-delete unsellable pass (so you can turn on "delete greys" while marking Herb as Keep and never lose a Herb).
+- **Stored in `EAL_DB.familyFilter`** as a `{[subType] = "keep"|"sell"}` table. Keyed by the localised `subType` string returned by `GetItemInfo` — English on Ebonhold; non-English clients still work for whitelist/quality but the Filter tab shows English labels until a localised subclass map is wired up (future v4.12.x work).
+
+### Added — whitelist import / export
+- **Plain-text export string.** New **Export** / **Import** buttons on the Whitelist tab, plus `/eal export` and `/eal import` slash commands. Opens a modal-ish popup with a scrollable EditBox. Format is human-readable, no base64 or compression required:
+  ```
+  EBWL:v1:A:name1|name2|...::C:name1|name2|...
+  ```
+  Two scope sections (`A:` = account, `C:` = character), `|` as separator (safe since item names never contain it). Parser is lenient about trailing whitespace / empty entries. Version-tagged so the format can evolve without breaking old exports.
+- **Import merges** into your existing whitelist rather than replacing it; duplicates (present in either scope) are silently skipped. Chat summary prints `+N account, +N character, N duplicates skipped`.
+- **Export button** highlights the string on click so you can Ctrl+C immediately.
+
+### Slash commands
+- New: `export` (opens the export popup), `import` (opens the import popup).
+- Help line updated to include both.
+
 ## [4.11.0] - 2026-05-18
 
 ### Added — Personal bank stack consolidation

@@ -18,13 +18,29 @@ Open with `/eal`, `/autoloot`, or the minimap button.
 - **Auto-repair + auto-sell** — The moment any merchant window opens (that the addon triggered), `RepairAllItems()` fires, then qualifying items are sold in batches of **45 per pulse** with a **1.0s pause** between batches. A single summary prints when done.
 - **Fast Mode** — Doubles batch size (→ 90) and halves the delay (→ 0.5s) for higher-end hardware. Tooltip warns of possible disconnects on low-end clients.
 - **Per-quality sell toggles** — Grey (default on), White, Uncommon, Rare, Epic.
-- **Mount-aware** — Dismisses the active companion when you mount; re-summons the correct one 1.5s after dismount.
-- **Companion stuck detection** — Re-summons your loot companion if it drifts more than 5 yards away (skipped while mounted).
+- **Mount-aware** — Dismisses the active companion when you mount; re-summons the correct one 1.5s after dismount. Sell cycles requested while mounted or in combat are deferred and fire automatically on dismount / combat-end.
+- **Companion despawn detection** — Every 3 seconds while looting or selling, checks the companion list's `summoned` flag for whichever pet the addon expects to be out. If it's gone (out-of-range despawn, server hiccup, world change), it's re-called automatically. Works on every class (pre-v4.12 the check silently no-op'd on non-Hunter/Warlock — fixed in v4.12).
+- **Bags-full recovery** — If a sell cycle finishes with 0 free slots (BoP quest/soulbound items filled the last slots), you get a clear warning and a chat hint; the loot cycle auto-resumes the moment you manually free a slot.
+- **Companion-list load safety** — If AutoLoot tries to summon before the client's companion list has loaded (early login), the request is latched and retried automatically on the next `COMPANION_UPDATE`.
 
 ### Safety & trust
 - **No auto-sell at random vendors** — By default, AutoLoot only sells when it actively triggered the cycle. Repair vendors and quest NPCs are *not* touched. There's a separate `Sell at any vendor` toggle if you want the old aggressive behavior.
 - **Auto-delete unsellable items is opt-in and per-quality** — A master toggle (off by default, gated by a confirmation popup) plus four independent per-rarity ticks: **Common / Uncommon / Rare / Epic**. Only items with **no vendor price** are deleted, and only for tiers you've ticked. Grey/Poor is excluded by design (grey items always have a vendor price). Quest items and some tokens have no vendor price, so use this carefully — whitelist anything you want to keep.
 - **Confirmation popups** on every destructive action — `Clear Whitelist`, `Clear Stash`, enabling auto-delete-unsellable, and `/eal reset` all prompt before executing.
+
+### Item family filter *(new in v4.12)*
+- **Per-subclass Keep / Sell overrides** on the new **Filter** tab. Pick any of 16 curated item families (Cloth, Leather, Metal & Stone, Herb, Elemental, Enchanting mats, Jewelcrafting gems, Meat/Fish, Food & Drink, Potion, Elixir, Flask, Bandage, Scroll, Junk, Glyph) and set it to:
+  - **Keep** — always skip regardless of quality tick (great for "always keep all cloth").
+  - **Sell** — force-sell regardless of quality tick (great for "always sell all leather"). Still needs a vendor price; whitelist and price-cap still win.
+  - **default** — the quality toggles on the Sell tab decide.
+- The filter applies to the main sell cycle, quick-sell-by-iLvl, **and** the auto-delete unsellable pass — so you can safely turn on "delete greys" while marking Herb as **Keep** and never lose a herb.
+
+### Whitelist import / export *(new in v4.12)*
+- **Copy-pasteable string** to share whitelists on Discord or migrate between characters/accounts. Buttons on the Whitelist tab plus `/eal export` / `/eal import` slash commands. Format is human-readable, no base64 required:
+  ```
+  EBWL:v1:A:name1|name2|...::C:name1|name2|...
+  ```
+- Import merges into your existing whitelist; duplicates skipped automatically. Preserves the `[A]` (account) vs `[C]` (character) scope split.
 
 ### Customization
 - **Configurable companion names** — Loot and vendor companion names are editable fields. Defaults to `Greedy Scavenger` / `Goblin Merchant` (Ebonhold). Works with any companion pets your server provides.
@@ -79,13 +95,55 @@ If your server uses different names (or a different language), open the AutoLoot
 | `/eal cleanmail` | Delete read empty mail from the open mailbox |
 | `/eal bankconsolidate` (alias `/eal bc`) | Merge partial stacks across the personal bank (main + bank-bag slots) |
 | `/eal gbconsolidate` (alias `/eal gbc`) | Merge partial stacks in the current guild bank tab |
+| `/eal export` | Open the whitelist export popup (copy-pasteable string) |
+| `/eal import` | Open the whitelist import popup (paste a string to merge) |
 | `/eal reset` | Clear whitelist (confirmation required) |
 | `/eal minimap` | Show/hide the minimap button |
 | `/eal help` | Print the command list |
 
 ---
 
-## Workflow
+## Usability guide
+
+### First-time setup (60 seconds)
+
+1. Log in. AutoLoot prints `v4.12.0 by Veronica-Vasilieva loaded` and a coin-icon **minimap button** appears next to your minimap.
+2. **Left-click the minimap button** (or `/eal`) to open the settings window.
+3. Go to the **Sell** tab. Confirm the two **COMPANION NAMES** — defaults are `Greedy Scavenger` (loot) and `Goblin Merchant` (vendor). If your server uses different names, edit both fields and press Enter.
+4. On the same tab, tick which **SELL QUALITY** tiers you want auto-sold. Grey is on by default; most players also enable White.
+5. Go to the **General** tab and click **Enable** — the loot pet is summoned. From now on, everything runs by itself.
+
+### Typical loot → sell run
+
+1. Kill / loot as usual. The loot companion picks up drops; the header row shows `Status: LOOTING · Free Slots: N`.
+2. When bags fill, the addon **dismisses the loot pet, summons the vendor pet, and prints a chat notice**. You'll hear an alert sound after 8s if you haven't opened the vendor yet.
+3. **Target the vendor pet and press your `Interact with Target` keybind** (or click the on-screen coin button, then press the interact key). The merchant window opens.
+4. Auto-repair fires (subject to your repair-cost cap), then items sell in throttled batches. Wait for the `Sold N items` summary.
+5. Close the merchant window. Loot cycle **resumes automatically** if bags now have free space.
+
+### Tips
+
+- **You never need to press Enable more than once.** Enabled state persists across sessions and characters. Right-click the minimap button to toggle it quickly.
+- **Nothing happens at regular vendors.** By default, walking up to a repair NPC or quest vendor does not trigger a sell. The `Sell at any vendor` toggle on the General tab flips this if you want it.
+- **Protect a specific item once, keep it safe forever.** Add its name to the **Whitelist** tab (or Ctrl+Shift+Click the item link anywhere — chat, bag, tooltip, AH). Or drag the item onto the Whitelist tab.
+- **Skip the vendor entirely for trash.** On the Sell tab, enable *Auto-delete unsellable → Grey* and every grey item gets deleted mid-loot. Combine with the Filter tab (mark specific families as **Keep**) to make sure nothing you care about is caught in the sweep.
+- **"Always keep all X" / "Always sell all Y"** — use the **Filter** tab. Overrides the quality ticks, so you can tick nothing on the Sell tab and just say *Sell = Cloth + Leather + Metal & Stone + Junk* and it'll work exactly like that.
+- **Sharing whitelists** — On the Whitelist tab, hit **Export**, Ctrl+C the string, paste on Discord. Recipient hits **Import** and pastes.
+- **Bags full with only quest / soulbound left?** You'll get a red warning. Manually drop one of the stuck items or move it to the bank; looting resumes on the next `BAG_UPDATE`.
+- **Combat / mounted** — sell cycles requested while mounted or in combat are deferred and fire automatically the moment you dismount or leave combat. You'll see a chat line telling you it's queued.
+- **iLvl trash-clear** — at a vendor, `/eal ilvlsell` (or the button on the Sell tab) sweeps every equippable item at or below your configured iLvl threshold. Handy after a long dungeon run.
+- **Bank + mail helpers** — the Bank tab auto-deposits any item whose name is in your stash list; the Mail tab auto-collects on mailbox open (COD mail is always skipped). Both are opt-in and per-character.
+
+### Common questions
+
+- **Why doesn't AutoLoot open the vendor window itself?** `InteractUnit` is a protected function — Blizzard blocks any addon from targeting-and-interacting in one step. That's why the flow needs one player-input click (or your Interact with Target keybind).
+- **Does it work with a name / language different from `Greedy Scavenger`?** Yes — set the exact companion names in the Sell tab. Companion lookup is case-insensitive.
+- **My server just added a new merchant pet — will AutoLoot pick it up?** Type the exact name into the Vendor field on the Sell tab. That's it.
+- **Does it destroy quest items?** No. The auto-delete-unsellable path is opt-in per-quality and only touches items with no vendor price (which quest items DO have, actually — the check is `sellPrice == 0`). The Filter tab and Whitelist give you further protection.
+
+---
+
+## Workflow (quick reference)
 
 1. Open the window with `/eal` or the minimap button.
 2. Tick the quality tiers you want sold (Grey is on by default).
@@ -112,40 +170,33 @@ Toggle the Vendor button's visibility from **Show/Hide Vendor Btn** in the setti
 
 ## GUI overview
 
+Tabbed 720×520 landscape window (v4.10+). Header (status, free slots, lifetime gold) is visible on every tab; content changes based on the selected tab.
+
 ```
-┌─────────────────────────────────────────┐
-│        AutoLoot & Sell   v4.0           │
-├─────────────────────────────────────────┤
-│ Status: LOOTING  Free Slots: 12         │
-│                        [ ] Fast Mode    │
-│ Lifetime: 12g 35s (287 items)           │
-├─────────────────────────────────────────┤
-│ [ Enable/Disable ]    [ Force Sell Now ]│
-├─────────────────────────────────────────┤
-│ Click vendor button, then Interact key  │
-│ to sell               [Show Vendor Btn] │
-├─────────────────────────────────────────┤
-│ COMPANION NAMES                         │
-│ Loot:   [Greedy Scavenger            ]  │
-│ Vendor: [Goblin Merchant             ]  │
-├─────────────────────────────────────────┤
-│ SELL QUALITY                            │
-│ [x] Grey  [ ] White  [ ] Uncommon       │
-│ [ ] Rare  [ ] Epic                      │
-├─────────────────────────────────────────┤
-│ BEHAVIOR                                │
-│ [ ] Sell at any vendor (not just summ.) │
-│ [ ] Auto-delete unsellable rares  [x] Sound
-├─────────────────────────────────────────┤
-│ ITEM WHITELIST  [A]account  [C]char     │
-│ [Item Name           ] [+Acct] [+Char]  │
-│ [ Whitelist Tome of Echo: ]    [Clear]  │
-│ ┌───────────────────────────────────┐   │
-│ │ [A] Hearthstone          [Remove] │   │
-│ │ [C] Tome of Echo: Fire   [Remove] │   │
-│ └───────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│              AutoLoot & Sell   v4.12.0                          [X] │
+│                       by Veronica-Vasilieva                         │
+├─────────────────────────────────────────────────────────────────────┤
+│ Status: LOOTING · Free Slots: 12   Lifetime: 12g 35s (287 items)    │
+├─────────────────────────────────────────────────────────────────────┤
+│ [ General ] [ Sell ] [ Whitelist ] [ Bank ] [ Mail ] [ Filter ]     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│ (tab content — depends on selected tab)                             │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+**Tab contents at a glance:**
+
+| Tab | What lives here |
+|---|---|
+| **General** | Enable/Disable · Force Sell Now · Fast Mode · Sound · Sell at any vendor · Sell-price cap · Repair-cost cap · Vendor button toggle · Minimap toggle |
+| **Sell** | Companion names (Loot / Vendor) · Sell-quality ticks (Grey/White/Uncommon/Rare/Epic) · Auto-delete unsellable (master + per-quality) · Quick-sell by iLvl |
+| **Whitelist** | Text input + `+Acct`/`+Char` · Whitelist Tome of Echo · Clear · **Export** / **Import** · scrollable `[A]`/`[C]` entry list · drag-drop + Ctrl+Shift+Click quick-add |
+| **Bank** | Auto-deposit on bank open (per-char) · Deposit Stash Now · scrollable stash list · Personal-bank consolidate · Guild-bank consolidate |
+| **Mail** | Auto-collect on mailbox open (per-char) · Money vs. items sub-toggles · Auto-delete read empty · Collect Now · Clean Read Mail |
+| **Filter** *(new v4.12)* | 16 item-family rows, each with **Keep** / **Sell** buttons that override the quality ticks · Clear All Filter Rules |
 
 The minimap button and on-screen Vendor button float separately — drag them where you like.
 
